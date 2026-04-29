@@ -176,7 +176,7 @@ describe('workspace runtime reload', () => {
         })
     })
 
-    it('treats act-only changes as hot and leaves projection dirtiness untouched', () => {
+    it('records act runtime-shape changes as lazy projection dirtiness', () => {
         const harness = createHarness({
             ...createBaseState(),
             runtimeReloadPending: false,
@@ -188,9 +188,14 @@ describe('workspace runtime reload', () => {
             workspaceWide: true,
         })
 
-        expect(result).toBe('hot')
+        expect(result).toBe('lazy_projection')
         expect(harness.get().runtimeReloadPending).toBe(false)
-        expect(harness.get().projectionDirty).toEqual(createEmptyProjectionDirtyState())
+        expect(harness.get().projectionDirty).toEqual({
+            performerIds: [],
+            actIds: ['act-1'],
+            draftIds: [],
+            workspaceWide: true,
+        })
     })
 
     it('spawns a new performer without overlapping an existing act window', () => {

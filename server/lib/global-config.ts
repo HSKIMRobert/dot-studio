@@ -10,6 +10,11 @@ export function resolveGlobalConfigPath(): string {
         return path.join(explicitConfigDir, 'opencode.json')
     }
 
+    if (!process.env.OPENCODE_URL) {
+        const studioDir = process.env.STUDIO_DIR || path.join(os.homedir(), '.dot-studio')
+        return path.join(studioDir, 'opencode', 'opencode.json')
+    }
+
     const configRoot = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
     return path.join(configRoot, 'opencode', 'opencode.json')
 }
