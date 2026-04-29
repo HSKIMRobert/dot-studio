@@ -19,6 +19,7 @@ import {
     buildThreadRows,
     LayerRow,
     resolveSessionActivityAt,
+    workspaceShortPath,
 } from './workspace-explorer-utils';
 import {
     resolveNodeBaselineHidden,
@@ -221,14 +222,12 @@ export default function WorkspaceExplorer() {
     })), [acts, focusSnapshot]);
 
     const workspaceRows = workspaceList.map((entry) => {
-        const segments = entry.workingDir.trim().replace(/\/+$/, '').split('/');
-        const shortPath = segments.length > 2 ? `…/${segments.slice(-2).join('/')}` : entry.workingDir;
         return (
             <LayerRow
                 key={entry.id}
                 icon={<Folder size={12} className={entry.id === workspaceId ? 'icon-active' : 'icon-muted'} />}
                 label={workspaceLabel(entry.workingDir)}
-                meta={shortPath}
+                meta={workspaceShortPath(entry.workingDir)}
                 active={entry.id === workspaceId}
                 onClick={() => loadWorkspace(entry.id)}
                 actions={

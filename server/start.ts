@@ -38,6 +38,24 @@ function waitForExit(child: ChildProcess) {
     })
 }
 
+function terminateProcessTree(child: ChildProcess, force = false) {
+    if (process.platform === 'win32' && child.pid) {
+        spawn('taskkill.exe', [
+            '/PID',
+            String(child.pid),
+            '/T',
+            ...(force ? ['/F'] : []),
+        ], {
+            stdio: 'ignore',
+        }).once('error', () => {
+            child.kill(force ? 'SIGKILL' : 'SIGTERM')
+        })
+        return
+    }
+
+    child.kill(force ? 'SIGKILL' : 'SIGTERM')
+}
+
 async function stopAll(exitCode: number) {
     if (shuttingDown) {
         return
@@ -46,14 +64,14 @@ async function stopAll(exitCode: number) {
 
     for (const { child } of managedProcesses) {
         if (child.exitCode === null) {
-            child.kill('SIGTERM')
+            terminateProcessTree(child)
         }
     }
 
     const forcedKill = setTimeout(() => {
         for (const { child } of managedProcesses) {
             if (child.exitCode === null) {
-                child.kill('SIGKILL')
+                terminateProcessTree(child, true)
             }
         }
     }, SHUTDOWN_TIMEOUT_MS)

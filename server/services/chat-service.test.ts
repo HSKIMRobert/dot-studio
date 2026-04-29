@@ -493,7 +493,7 @@ describe('sendStudioChatMessage', () => {
         )
 
         expect(promptAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
-            system: expect.stringContaining('# Collaboration Context'),
+            system: expect.stringContaining('# Act Runtime Context'),
         }))
         expect(promptAsyncMock).toHaveBeenCalledWith(expect.objectContaining({
             parts: [{

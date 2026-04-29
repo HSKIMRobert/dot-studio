@@ -56,8 +56,16 @@ export type ThreadRow = {
 // ── Pure helpers ────────────────────────────────────────
 
 export function workspaceLabel(workingDir: string) {
-    const normalized = workingDir.trim().replace(/\/+$/, '')
+    const normalized = workingDir.trim().replace(/[\\/]+$/, '')
     return normalized.split(/[/\\]/).pop() || 'Workspace'
+}
+
+export function workspaceShortPath(workingDir: string) {
+    const trimmed = workingDir.trim()
+    const separator = trimmed.includes('\\') && !trimmed.includes('/') ? '\\' : '/'
+    const normalized = trimmed.replace(/[\\/]+$/, '')
+    const segments = normalized.split(/[/\\]/).filter(Boolean)
+    return segments.length > 2 ? `...${separator}${segments.slice(-2).join(separator)}` : workingDir
 }
 
 export function buildPerformerSessionRows(

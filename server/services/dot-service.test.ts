@@ -1,12 +1,29 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
+import os from 'node:os'
+import path from 'node:path'
+import { promises as fs } from 'node:fs'
 
 const publishStudioAssetMock = vi.fn()
 const readDotAuthUserMock = vi.fn()
 const searchRegistryMock = vi.fn()
 const getRegistryAssetDetailMock = vi.fn()
+const assetFilePathMock = vi.fn()
+const copySkillDirMock = vi.fn()
+const danceAssetDirMock = vi.fn()
+const ensureDotDirMock = vi.fn()
+const fetchRegistryPackageRawMock = vi.fn()
+const parseActAssetMock = vi.fn()
+const parseDotAssetMock = vi.fn()
+const parsePerformerAssetMock = vi.fn()
+const reportInstallMock = vi.fn()
+const shallowCloneMock = vi.fn()
 
 vi.mock('../lib/dot-source.js', () => ({
-    ensureDotDir: vi.fn(),
+    assetFilePath: assetFilePathMock,
+    copySkillDir: copySkillDirMock,
+    danceAssetDir: danceAssetDirMock,
+    ensureDotDir: ensureDotDirMock,
+    fetchRegistryPackageRaw: fetchRegistryPackageRawMock,
     getDotDir: vi.fn(),
     getGlobalCwd: vi.fn(),
     getGlobalDotDir: vi.fn(),
@@ -14,10 +31,13 @@ vi.mock('../lib/dot-source.js', () => ({
     installActWithDependencies: vi.fn(),
     installAsset: vi.fn(),
     installPerformerWithDeps: vi.fn(),
-    parsePerformerAsset: vi.fn(),
+    parseActAsset: parseActAssetMock,
+    parseDotAsset: parseDotAssetMock,
+    parsePerformerAsset: parsePerformerAssetMock,
     readAsset: vi.fn(),
-    reportInstall: vi.fn(),
+    reportInstall: reportInstallMock,
     searchRegistry: searchRegistryMock,
+    shallowClone: shallowCloneMock,
     startLogin: vi.fn(),
 }))
 
@@ -37,6 +57,90 @@ vi.mock('./asset-service.js', () => ({
     findInstalledDependents: vi.fn(),
     getRegistryAssetDetail: getRegistryAssetDetailMock,
 }))
+
+describe('installDotAsset', () => {
+    let cwd: string
+    let cloneDir: string
+
+    beforeEach(async () => {
+        cwd = await fs.mkdtemp(path.join(os.tmpdir(), 'dot-studio-install-'))
+        cloneDir = await fs.mkdtemp(path.join(os.tmpdir(), 'dot-studio-clone-'))
+
+        assetFilePathMock.mockReset().mockImplementation((targetCwd: string, urn: string) =>
+            path.join(targetCwd, '.dance-of-tal', 'assets', `${urn.replace(/[\\/]/g, '__')}.json`),
+        )
+        copySkillDirMock.mockReset()
+        danceAssetDirMock.mockReset().mockImplementation((targetCwd: string, urn: string) =>
+            path.join(targetCwd, '.dance-of-tal', 'dances', urn.replace(/[\\/]/g, '__')),
+        )
+        ensureDotDirMock.mockReset().mockResolvedValue(undefined)
+        fetchRegistryPackageRawMock.mockReset()
+        parseActAssetMock.mockReset().mockImplementation((asset) => asset)
+        parseDotAssetMock.mockReset().mockImplementation((asset) => asset)
+        parsePerformerAssetMock.mockReset().mockImplementation((asset) => asset)
+        reportInstallMock.mockReset().mockResolvedValue(undefined)
+        shallowCloneMock.mockReset().mockResolvedValue({
+            tempDir: cloneDir,
+            cleanup: vi.fn().mockResolvedValue(undefined),
+        })
+    })
+
+    it('normalizes Windows separators from registry GitHub dance paths before copying', async () => {
+        await fs.mkdir(path.join(cloneDir, 'skills', 'pdf'), { recursive: true })
+        fetchRegistryPackageRawMock.mockImplementation(async (kind: string, owner: string, stage: string, name: string) => {
+            const urn = `${kind}/@${owner}/${stage}/${name}`
+            if (kind === 'act') {
+                return {
+                    payload: {
+                        kind: 'act',
+                        urn,
+                        payload: {
+                            participants: [{ key: 'Lead', performer: 'performer/@acme/team/lead' }],
+                        },
+                    },
+                }
+            }
+            if (kind === 'performer') {
+                return {
+                    payload: {
+                        kind: 'performer',
+                        urn,
+                        payload: {
+                            tal: null,
+                            dances: ['dance/@anthropics/skills/pdf'],
+                        },
+                    },
+                }
+            }
+            if (kind === 'dance') {
+                return {
+                    payload: { kind: 'dance', urn },
+                    resource: {
+                        type: 'github',
+                        repo: 'anthropics/skills',
+                        path: 'skills\\pdf',
+                        ref: 'main',
+                    },
+                }
+            }
+            return { payload: { kind, urn } }
+        })
+
+        const { installDotAsset } = await import('./dot-service.js')
+        const result = await installDotAsset(cwd, {
+            urn: 'act/@acme/team/research',
+            force: true,
+            scope: 'stage',
+        })
+
+        expect('installedAssets' in result ? result.installedAssets.map((asset: { urn: string }) => asset.urn) : []).toContain('dance/@anthropics/skills/pdf')
+        expect(copySkillDirMock).toHaveBeenCalledWith(
+            path.join(cloneDir, 'skills', 'pdf'),
+            expect.any(String),
+            { repoRoot: cloneDir },
+        )
+    })
+})
 
 describe('publishDotAsset', () => {
     beforeEach(() => {

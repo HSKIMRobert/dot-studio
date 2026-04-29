@@ -18,6 +18,19 @@ const MAX_BUFFER = 500;
 const sessions = new Map<string, TerminalSession>();
 let sessionCounter = 0;
 
+function resolveTerminalShell(): { command: string; args: string[] } {
+    const explicitShell = process.env.DOT_STUDIO_TERMINAL_SHELL?.trim();
+    if (explicitShell) {
+        return { command: explicitShell, args: process.platform === 'win32' ? [] : ['-l'] };
+    }
+
+    if (process.platform === 'win32') {
+        return { command: process.env.ComSpec || 'cmd.exe', args: [] };
+    }
+
+    return { command: process.env.SHELL || '/bin/zsh', args: ['-l'] };
+}
+
 function errorMessage(error: unknown, fallback = 'Unknown error'): string {
     return error instanceof Error && error.message ? error.message : fallback;
 }
@@ -136,15 +149,15 @@ export function setupTerminalWs(server: HttpServer, defaultCwd: string | (() => 
     async function createSession(ws: WebSocket, cwd: string) {
         sessionCounter++;
         const id = `term-${sessionCounter}`;
-        const shell = process.env.SHELL || '/bin/zsh';
+        const shell = resolveTerminalShell();
         const title = `Terminal ${sessionCounter}`;
 
         try {
             const ptyData = await opencodePtyRequest<{ id?: string }>('/pty', {
                 method: 'POST',
                 body: JSON.stringify({
-                    command: shell,
-                    args: ['-l'],
+                    command: shell.command,
+                    args: shell.args,
                     cwd,
                     title,
                     env: {
@@ -167,7 +180,7 @@ export function setupTerminalWs(server: HttpServer, defaultCwd: string | (() => 
 
             ws.send(JSON.stringify({
                 type: 'connected',
-                id, title, shell, cwd,
+                id, title, shell: shell.command, cwd,
                 sessions: getSessionList(cwd),
             }));
 

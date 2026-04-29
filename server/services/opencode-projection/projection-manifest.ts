@@ -163,7 +163,11 @@ export function localSkillProjectionDir(
 }
 
 export function toRelativePath(executionDir: string, absPath: string) {
-    return path.relative(executionDir, absPath)
+    return toProjectionPath(path.relative(executionDir, absPath))
+}
+
+export function toProjectionPath(value: string) {
+    return value.replace(/\\/g, '/')
 }
 
 export type Posture = 'build' | 'plan'
@@ -188,5 +192,5 @@ export function resolveAgentIdentity(input: {
         filePath,
     ).replace(/\.md$/, '')
 
-    return { agentName, filePath, fileName }
+    return { agentName: toProjectionPath(agentName), filePath, fileName }
 }

@@ -72,3 +72,21 @@ export function resolvePackageBin(packageName: string, binName: string): string 
 
     return resolveBinPath(packageJsonPath, binName)
 }
+
+export function resolvePackageBinCommand(packageName: string, binName: string): { command: string; args: string[] } | null {
+    const binPath = resolvePackageBin(packageName, binName)
+    if (!binPath) {
+        return null
+    }
+
+    const extension = path.extname(binPath).toLowerCase()
+    if (extension === '.cmd' || extension === '.exe' || extension === '.bat') {
+        return { command: binPath, args: [] }
+    }
+
+    if (process.platform === 'win32' || extension === '.js' || extension === '.cjs' || extension === '.mjs') {
+        return { command: process.execPath, args: [binPath] }
+    }
+
+    return { command: binPath, args: [] }
+}

@@ -1,5 +1,6 @@
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
 import fs from 'fs/promises'
+import os from 'os'
 import open from 'open'
 import path from 'path'
 import { promisify } from 'util'
@@ -14,14 +15,69 @@ import {
 } from '../lib/config.js'
 import { invalidateAll } from '../lib/cache.js'
 
-const execAsync = promisify(exec)
+const execFileAsync = promisify(execFile)
 
-export async function pickDirectory(prompt: string) {
-    const escapedPrompt = String(prompt || 'Select Folder')
+async function pickDirectoryMac(prompt: string) {
+    const escapedPrompt = prompt
         .replace(/\\/g, '\\\\')
         .replace(/"/g, '\\"')
-    const { stdout } = await execAsync(`osascript -e 'POSIX path of (choose folder with prompt "${escapedPrompt}")'`)
-    return { path: stdout.trim() }
+    const { stdout } = await execFileAsync('osascript', [
+        '-e',
+        `POSIX path of (choose folder with prompt "${escapedPrompt}")`,
+    ])
+    return stdout.trim()
+}
+
+async function pickDirectoryWindows(prompt: string) {
+    const script = [
+        'Add-Type -AssemblyName System.Windows.Forms',
+        '$dialog = New-Object System.Windows.Forms.FolderBrowserDialog',
+        `$dialog.Description = ${JSON.stringify(prompt)}`,
+        '$dialog.ShowNewFolderButton = $true',
+        'if ($dialog.ShowDialog() -eq [System.Windows.Forms.DialogResult]::OK) {',
+        '  [Console]::Out.Write($dialog.SelectedPath)',
+        '  exit 0',
+        '}',
+        'exit 1',
+    ].join('; ')
+
+    const candidates = ['powershell.exe', 'pwsh.exe', 'pwsh', 'powershell']
+    let lastError: unknown = null
+
+    for (const command of candidates) {
+        try {
+            const { stdout } = await execFileAsync(command, [
+                '-NoProfile',
+                '-STA',
+                '-Command',
+                script,
+            ], {
+                windowsHide: true,
+            })
+            const selectedPath = stdout.trim()
+            if (selectedPath) {
+                return selectedPath
+            }
+        } catch (error) {
+            lastError = error
+        }
+    }
+
+    throw lastError instanceof Error ? lastError : new Error('Windows folder picker failed')
+}
+
+export async function pickDirectory(prompt: string) {
+    const title = String(prompt || 'Select Folder')
+
+    if (process.platform === 'darwin') {
+        return { path: await pickDirectoryMac(title) }
+    }
+
+    if (process.platform === 'win32') {
+        return { path: await pickDirectoryWindows(title) }
+    }
+
+    throw new Error(`Folder picker is not available on ${os.platform()}. Enter a path manually.`)
 }
 
 export async function pickWorkingDirectory() {
@@ -41,7 +97,7 @@ export async function updateStudioConfig(patch: Partial<StudioConfig>) {
 }
 
 export async function initializeStudioProject(workingDir: string) {
-    const resolved = path.resolve(workingDir.replace(/\/+$/, ''))
+    const resolved = path.resolve(workingDir)
     await ensureDotDir(resolved)
     setActiveProjectDir(resolved)
     invalidateAll()
@@ -53,7 +109,7 @@ export async function activateStudioProject(workingDir: string) {
         return { ok: false as const, status: 400, error: 'workingDir is required' }
     }
 
-    const resolved = path.resolve(workingDir.replace(/\/+$/, ''))
+    const resolved = path.resolve(workingDir)
 
     try {
         const stat = await fs.stat(resolved)
@@ -81,7 +137,7 @@ export async function openStudioPath(targetPath: string) {
         return { ok: false as const, status: 400, error: 'path is required' }
     }
 
-    const resolved = path.resolve(targetPath.replace(/\/+$/, ''))
+    const resolved = path.resolve(targetPath)
 
     try {
         await fs.stat(resolved)

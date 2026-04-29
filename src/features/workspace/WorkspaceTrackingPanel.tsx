@@ -67,44 +67,48 @@ export function WorkspaceTrackingPanel() {
             return
         }
 
-        void fetchFiles()
+        const initialRefresh = window.setTimeout(() => void fetchFiles(), 0)
         const interval = window.setInterval(() => void fetchFiles(), 10000)
-        return () => window.clearInterval(interval)
+        return () => {
+            window.clearTimeout(initialRefresh)
+            window.clearInterval(interval)
+        }
     }, [fetchFiles, isTrackingOpen])
 
     useEffect(() => {
         if (!isTrackingOpen || !selectedPath) {
-            setPreview(null)
-            setPreviewLoading(false)
             return
         }
 
         let cancelled = false
-        setPreviewLoading(true)
-        api.file.read(selectedPath)
-            .then((result) => {
-                if (cancelled) return
-                setPreview({
-                    path: selectedPath,
-                    content: readFilePreviewContent(result),
+        const previewRefresh = window.setTimeout(() => {
+            setPreviewLoading(true)
+            api.file.read(selectedPath)
+                .then((result) => {
+                    if (cancelled) return
+                    setPreview({
+                        path: selectedPath,
+                        content: readFilePreviewContent(result),
+                    })
                 })
-            })
-            .catch((error: unknown) => {
-                if (cancelled) return
-                setPreview({
-                    path: selectedPath,
-                    content: '',
-                    error: error instanceof Error ? error.message : 'Unable to read file.',
+                .catch((error: unknown) => {
+                    if (cancelled) return
+                    setPreview({
+                        path: selectedPath,
+                        content: '',
+                        error: error instanceof Error ? error.message : 'Unable to read file.',
+                    })
                 })
-            })
-            .finally(() => {
-                if (!cancelled) {
-                    setPreviewLoading(false)
-                }
-            })
+                .finally(() => {
+                    if (!cancelled) {
+                        setPreviewLoading(false)
+                    }
+                })
+        }, 0)
 
         return () => {
             cancelled = true
+            window.clearTimeout(previewRefresh)
         }
     }, [isTrackingOpen, selectedPath])
 

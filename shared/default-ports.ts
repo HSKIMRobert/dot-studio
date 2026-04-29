@@ -1,3 +1,4 @@
-export const STUDIO_VITE_PORT = 43100
+export const STUDIO_APP_PORT = 43100
+export const STUDIO_VITE_PORT = STUDIO_APP_PORT
 export const STUDIO_API_PORT = 43101
 export const STUDIO_OPENCODE_PORT = 43102

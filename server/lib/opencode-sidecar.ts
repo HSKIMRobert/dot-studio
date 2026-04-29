@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'child_process'
 import path from 'path'
 import { DEFAULT_PROJECT_DIR, OPENCODE_MANAGED, OPENCODE_URL, STUDIO_DIR } from './config.js'
-import { resolvePackageBin } from './package-bin.js'
+import { resolvePackageBinCommand } from './package-bin.js'
 import { STUDIO_OPENCODE_PORT } from '../../shared/default-ports.js'
 
 const STARTUP_TIMEOUT_MS = 15_000
@@ -28,8 +28,20 @@ function resolvePort(): number {
     }
 }
 
-function resolveCommand(): string {
-    return process.env.OPENCODE_BIN || resolvePackageBin('opencode-ai', 'opencode') || 'opencode'
+function resolveCommand(): { command: string; args: string[] } {
+    if (process.env.OPENCODE_BIN) {
+        return { command: process.env.OPENCODE_BIN, args: [] }
+    }
+
+    const packageCommand = resolvePackageBinCommand('opencode-ai', 'opencode')
+    if (packageCommand) {
+        return packageCommand
+    }
+
+    return {
+        command: process.platform === 'win32' ? 'opencode.cmd' : 'opencode',
+        args: [],
+    }
 }
 
 export function isManagedOpencode(): boolean {
@@ -94,6 +106,24 @@ async function waitForShutdown() {
     throw new Error('OpenCode sidecar did not stop in time.')
 }
 
+function stopChildProcess(target: ChildProcess, force = false) {
+    if (process.platform === 'win32' && target.pid) {
+        spawn('taskkill.exe', [
+            '/PID',
+            String(target.pid),
+            '/T',
+            ...(force ? ['/F'] : []),
+        ], {
+            stdio: 'ignore',
+        }).once('error', () => {
+            target.kill(force ? 'SIGKILL' : 'SIGTERM')
+        })
+        return
+    }
+
+    target.kill(force ? 'SIGKILL' : 'SIGTERM')
+}
+
 export async function ensureOpencodeSidecar(): Promise<void> {
     if (!isManagedOpencode()) {
         return
@@ -121,9 +151,10 @@ export async function ensureOpencodeSidecar(): Promise<void> {
             return
         }
 
+        const resolvedCommand = resolveCommand()
         const opencode = spawn(
-            resolveCommand(),
-            ['serve', '--port', String(resolvePort())],
+            resolvedCommand.command,
+            [...resolvedCommand.args, 'serve', '--port', String(resolvePort())],
             {
                 cwd: path.resolve(DEFAULT_PROJECT_DIR),
                 env: {
@@ -165,9 +196,9 @@ export async function restartOpencodeSidecar(): Promise<void> {
     }
 
     const currentChild = child
-    currentChild.kill('SIGTERM')
+    stopChildProcess(currentChild)
     await waitForShutdown().catch(async () => {
-        currentChild.kill('SIGKILL')
+        stopChildProcess(currentChild, true)
         await waitForShutdown()
     })
     child = null

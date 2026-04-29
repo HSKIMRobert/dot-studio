@@ -15,6 +15,7 @@ import {
     ensureOpenProjectDir,
     validateExistingProjectDir,
 } from './server/lib/cli-utils.js'
+import { STUDIO_APP_PORT } from './shared/default-ports.js'
 
 type StudioPackageMeta = {
     name: string
@@ -65,7 +66,7 @@ type DoctorCheck = {
 
 class CliUsageError extends Error {}
 
-const DEFAULT_PORT = 3001
+const DEFAULT_PORT = STUDIO_APP_PORT
 const MAX_PORT_SCAN = 20
 const STATUS_PREFIX: Record<DoctorCheck['status'], string> = {
     ok: 'OK',
@@ -93,7 +94,7 @@ Arguments:
   path                  Workspace path to open or inspect. Defaults to the current directory.
 
 Options:
-  -p, --port <port>     Port for the Studio server. Defaults to 3001.
+  -p, --port <port>     Port for the Studio server. Defaults to 43100.
       --opencode-url <url>
                         Connect to an existing OpenCode instance instead of managed mode.
       --performer <urn>

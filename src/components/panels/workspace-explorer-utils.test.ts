@@ -3,6 +3,8 @@ import {
     groupPerformerSessionsById,
     resolveActThreadActivityAt,
     resolveSessionActivityAt,
+    workspaceLabel,
+    workspaceShortPath,
     type PerformerSessionRow,
 } from './workspace-explorer-utils'
 
@@ -80,5 +82,10 @@ describe('workspace explorer activity helpers', () => {
             'session-a': 80,
             'session-b': 120,
         })).toBe(120)
+    })
+
+    it('formats Windows workspace paths with Windows separators', () => {
+        expect(workspaceLabel('C:\\Users\\juno\\project\\')).toBe('project')
+        expect(workspaceShortPath('C:\\Users\\juno\\project\\')).toBe('...\\juno\\project')
     })
 })

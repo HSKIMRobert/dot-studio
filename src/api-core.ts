@@ -29,14 +29,37 @@ export function setApiWorkingDirContext(workingDir: string | null) {
     workingDirContext = workingDir?.trim() ? workingDir.trim() : null
 }
 
+function isAbsoluteWorkspacePath(path: string) {
+    return path.startsWith('/')
+        || path.startsWith('\\')
+        || /^[a-zA-Z]:[\\/]/.test(path)
+        || path.startsWith('file://')
+}
+
+function trimTrailingPathSeparators(path: string) {
+    return path.replace(/[\\/]+$/, '')
+}
+
+function trimLeadingRelativePathPrefix(path: string) {
+    return path.replace(/^\.?[\\/]+/, '')
+}
+
+function workspaceSeparator(workingDir: string) {
+    return workingDir.includes('\\') && !workingDir.includes('/') ? '\\' : '/'
+}
+
+function basename(path: string) {
+    return path.split(/[/\\]/).pop() || path
+}
+
 export function absolutizeWorkspacePath(path: string, workingDir: string | null) {
     if (!path) {
         return path
     }
-    if (path.startsWith('/') || path.startsWith('file://') || !workingDir) {
+    if (isAbsoluteWorkspacePath(path) || !workingDir) {
         return path
     }
-    return `${workingDir.replace(/\/+$/, '')}/${path.replace(/^\.?\//, '')}`
+    return `${trimTrailingPathSeparators(workingDir)}${workspaceSeparator(workingDir)}${trimLeadingRelativePathPrefix(path)}`
 }
 
 function withApiBase(url: string) {
@@ -114,7 +137,7 @@ export function createApiEventSource(url: string) {
 export function normalizeWorkspaceFileEntry(entry: WorkspaceFileEntry) {
     if (typeof entry === 'string') {
         return {
-            name: entry.split('/').pop() || entry,
+            name: basename(entry),
             path: entry,
             absolute: absolutizeWorkspacePath(entry, resolveWorkingDirContext()),
             type: 'file',

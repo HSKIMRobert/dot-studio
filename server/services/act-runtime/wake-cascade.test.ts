@@ -448,7 +448,7 @@ describe('wake-cascade participant scheduling', () => {
         expect(cascade.injected).toEqual(['Researcher'])
         expect(promptAsync).toHaveBeenCalledWith(expect.objectContaining({
             sessionID: 'session-researcher',
-            system: expect.stringContaining('# Collaboration Context'),
+            system: expect.stringContaining('# Act Runtime Context'),
         }))
         expect(promptAsync).toHaveBeenCalledWith(expect.objectContaining({
             parts: [{

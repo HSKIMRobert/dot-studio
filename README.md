@@ -42,7 +42,7 @@ DOT Studio is built for local, iterative work:
 ### Requirements
 
 - Node.js `>=20.19.0`
-- An environment supported by Node.js and OpenCode
+- An environment supported by Node.js and OpenCode, including macOS, Linux, Windows, or WSL
 
 ```bash
 npm install -g dot-studio
@@ -62,9 +62,12 @@ OPENCODE_URL=http://localhost:43102 dot-studio
 
 Default local ports are grouped in the `43100` range to avoid collisions with more common development defaults:
 
-- Studio dev client: `43100`
-- Studio API: `43101`
+- published CLI Studio app and API: `43100`
+- dev client: `43100`
+- dev API: `43101`
 - managed OpenCode sidecar: `43102`
+
+If `43100` is busy, the published CLI scans upward and opens the next available port unless you pass `--port`.
 
 ## Core Concepts
 

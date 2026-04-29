@@ -1,17 +1,22 @@
 import fs from 'fs/promises'
+import path from 'path'
 import {
+    assetFilePath,
+    copySkillDir,
+    danceAssetDir,
     ensureDotDir,
+    fetchRegistryPackageRaw,
     getDotDir,
     getGlobalCwd,
     getGlobalDotDir,
     initRegistry,
-    installActWithDependencies,
-    installAsset,
-    installPerformerWithDeps,
+    parseActAsset,
+    parseDotAsset,
     parsePerformerAsset,
     readAsset,
     reportInstall,
     searchRegistry,
+    shallowClone,
     startLogin,
 } from '../lib/dot-source.js'
 import type { PerformerAsset } from '../lib/dot-source.js'
@@ -29,6 +34,131 @@ type RegistrySearchResult = {
     description: string
     tags: string[]
     updatedAt?: string
+}
+
+type InstalledAsset = {
+    urn: string
+    filePath: string
+    skipped: boolean
+}
+
+function normalizeRepoResourcePath(value: unknown) {
+    return typeof value === 'string'
+        ? value.replace(/\\/g, '/').split('/').filter(Boolean).join('/')
+        : ''
+}
+
+function splitRegistryUrn(urn: string) {
+    const parts = urn.split('/')
+    if (parts.length !== 4 || !parts[1].startsWith('@')) {
+        throw new Error(`Invalid URN format: '${urn}'. Expected: <kind>/@<owner>/<stage>/<name>`)
+    }
+    const [kind, owner, stage, name] = parts
+    if (kind !== 'tal' && kind !== 'dance' && kind !== 'act' && kind !== 'performer') {
+        throw new Error(`Invalid kind: '${kind}'. Allowed: tal, dance, act, performer`)
+    }
+    return { kind, owner, stage, name }
+}
+
+async function installRegistryAssetNormalized(cwd: string, urn: string, force = false): Promise<InstalledAsset> {
+    const { kind, owner, stage, name } = splitRegistryUrn(urn)
+    await ensureDotDir(cwd)
+
+    if (kind === 'dance') {
+        return installRegistryDanceNormalized(cwd, urn, owner.replace(/^@/, ''), stage, name, force)
+    }
+
+    const filePath = assetFilePath(cwd, urn)
+    if (!force && await fs.access(filePath).then(() => true).catch(() => false)) {
+        return { urn, filePath, skipped: true }
+    }
+
+    const pkgData = await fetchRegistryPackageRaw(kind, owner.replace(/^@/, ''), stage, name)
+    const asset = parseDotAsset(pkgData.payload)
+    if (asset.kind !== kind) {
+        throw new Error(`Registry payload kind mismatch. Expected '${kind}', received '${asset.kind}'.`)
+    }
+
+    await fs.mkdir(path.dirname(filePath), { recursive: true })
+    await fs.writeFile(filePath, JSON.stringify(asset, null, 2), 'utf-8')
+    return { urn, filePath, skipped: false }
+}
+
+async function installRegistryDanceNormalized(
+    cwd: string,
+    urn: string,
+    owner: string,
+    stage: string,
+    name: string,
+    force: boolean,
+): Promise<InstalledAsset> {
+    const targetDir = danceAssetDir(cwd, urn)
+    const skillMdPath = path.join(targetDir, 'SKILL.md')
+    if (!force && await fs.access(skillMdPath).then(() => true).catch(() => false)) {
+        return { urn, filePath: skillMdPath, skipped: true }
+    }
+
+    const pkgData = await fetchRegistryPackageRaw('dance', owner, stage, name)
+    const resource = pkgData.resource as { type?: unknown; repo?: unknown; path?: unknown; ref?: unknown } | undefined
+    if (!resource || resource.type !== 'github' || typeof resource.repo !== 'string' || !resource.repo.trim()) {
+        throw new Error(`Dance '${urn}' has no GitHub resource pointer. Use 'dot add <owner/repo>' to install from GitHub directly.`)
+    }
+
+    const repoPath = normalizeRepoResourcePath(resource.path)
+    const repoUrl = `https://github.com/${resource.repo}.git`
+    const ref = typeof resource.ref === 'string' && resource.ref.trim() ? resource.ref.trim() : 'main'
+    const { tempDir, cleanup } = await shallowClone({ url: repoUrl, ref })
+
+    try {
+        const srcDir = repoPath ? path.join(tempDir, ...repoPath.split('/')) : tempDir
+        if (!await fs.access(srcDir).then(() => true).catch(() => false)) {
+            throw new Error(`Skill directory '${repoPath || resource.path}' not found in repo '${resource.repo}'.`)
+        }
+        copySkillDir(srcDir, targetDir, { repoRoot: tempDir })
+    } finally {
+        await cleanup()
+    }
+
+    return { urn, filePath: skillMdPath, skipped: false }
+}
+
+async function installRegistryPerformerWithDepsNormalized(cwd: string, performerUrn: string, force = false) {
+    const installed: InstalledAsset[] = []
+    const performerAsset = await installRegistryAssetNormalized(cwd, performerUrn, force)
+    installed.push(performerAsset)
+
+    const performer = parsePerformerAsset(JSON.parse(await fs.readFile(assetFilePath(cwd, performerUrn), 'utf-8')))
+    if (performer.payload.tal) {
+        installed.push(await installRegistryAssetNormalized(cwd, performer.payload.tal, force))
+    }
+    for (const danceUrn of performer.payload.dances || []) {
+        installed.push(await installRegistryAssetNormalized(cwd, danceUrn, force))
+    }
+
+    return { performerUrn, installedAssets: installed }
+}
+
+async function installRegistryActWithDependenciesNormalized(cwd: string, actUrn: string, force = false) {
+    const installed: InstalledAsset[] = []
+    const seen = new Set<string>()
+    const markInstalled = (asset: InstalledAsset) => {
+        if (seen.has(asset.urn)) return
+        seen.add(asset.urn)
+        installed.push(asset)
+    }
+
+    const actAsset = await installRegistryAssetNormalized(cwd, actUrn, force)
+    markInstalled(actAsset)
+    const act = parseActAsset(JSON.parse(await fs.readFile(assetFilePath(cwd, actUrn), 'utf-8')))
+
+    for (const participant of act.payload.participants || []) {
+        const performerUrn = participant.performer
+        if (!performerUrn || seen.has(performerUrn)) continue
+        const result = await installRegistryPerformerWithDepsNormalized(cwd, performerUrn, force)
+        result.installedAssets.forEach(markInstalled)
+    }
+
+    return { actUrn, actAsset, installedAssets: installed }
 }
 
 function toRegistrySearchAsset(result: RegistrySearchResult): AssetListItem {
@@ -179,7 +309,7 @@ export async function installDotAsset(cwd: string, input: {
     await ensureDotDir(targetCwd)
 
     if (input.urn.startsWith('performer/')) {
-        const result = await installPerformerWithDeps(targetCwd, input.urn, input.force)
+        const result = await installRegistryPerformerWithDepsNormalized(targetCwd, input.urn, input.force)
         // Report installs for non-skipped assets (best-effort)
         for (const asset of result.installedAssets) {
             if (!asset.skipped) reportInstall(asset.urn).catch(() => {})
@@ -189,7 +319,7 @@ export async function installDotAsset(cwd: string, input: {
     }
 
     if (input.urn.startsWith('act/')) {
-        const result = await installActWithDependencies(targetCwd, input.urn, input.force)
+        const result = await installRegistryActWithDependenciesNormalized(targetCwd, input.urn, input.force)
         for (const asset of result.installedAssets) {
             if (!asset.skipped) reportInstall(asset.urn).catch(() => {})
         }
@@ -197,7 +327,7 @@ export async function installDotAsset(cwd: string, input: {
         return { ...result, scope: input.scope || 'stage' }
     }
 
-    const result = await installAsset(targetCwd, input.urn, input.force)
+    const result = await installRegistryAssetNormalized(targetCwd, input.urn, input.force)
     if (!result.skipped) reportInstall(input.urn).catch(() => {})
     invalidate('assets')
     return { ...result, scope: input.scope || 'stage' }

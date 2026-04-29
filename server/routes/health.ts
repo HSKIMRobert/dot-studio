@@ -17,13 +17,13 @@ const health = new Hono()
 // ── Health ───────────────────────────────────────────────
 health.get('/api/health', (c) => c.json({ ok: true, project: requestWorkingDir(c) }))
 
-// ── Pick Directory (macOS) ──────────────────────────────
+// ── Pick Directory ──────────────────────────────────────
 health.get('/api/studio/pick-directory', async (c) => {
     try {
         const prompt = c.req.query('prompt')
         return c.json(prompt ? await pickDirectory(prompt) : await pickWorkingDirectory())
-    } catch {
-        return jsonError(c, 'Selection cancelled or failed', 400)
+    } catch (error) {
+        return jsonError(c, error instanceof Error ? error.message : 'Selection cancelled or failed', 400)
     }
 })
 

@@ -15,6 +15,7 @@ export {
 } from 'dance-of-tal/lib/registry'
 
 export {
+    fetchRegistryPackageRaw,
     getRegistryPackage,
     reportInstall,
     searchRegistry,
