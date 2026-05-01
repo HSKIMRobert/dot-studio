@@ -7,7 +7,7 @@ import { refreshAssistantProjectionOnServerStartup } from './services/studio-ass
 
 // Config
 import { PORT, OPENCODE_URL, STUDIO_DIR, IS_PRODUCTION, getActiveProjectDir } from './lib/config.js'
-import { ensureOpencodeSidecar, isManagedOpencode } from './lib/opencode-sidecar.js'
+import { ensureOpencodeSidecar } from './lib/opencode-sidecar.js'
 
 const app = createServerApp()
 
@@ -21,7 +21,7 @@ await refreshAssistantProjectionOnServerStartup().catch((err) => {
 
 console.log(`\n🎪 DOT Studio Server${IS_PRODUCTION ? ' (production)' : ' (dev)'}`)
 console.log(`   API:      http://localhost:${PORT}`)
-console.log(`   OpenCode: ${OPENCODE_URL} (${isManagedOpencode() ? 'managed sidecar' : 'external'})`)
+console.log(`   OpenCode: ${OPENCODE_URL} (managed sidecar)`)
 console.log(`   Project:  ${getActiveProjectDir()}`)
 console.log(`   Data:     ${STUDIO_DIR}\n`)
 

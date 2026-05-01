@@ -11,11 +11,10 @@ import readline from 'readline/promises'
 import { parseDotAssetUrn } from './server/lib/dot-source.js'
 import { resolvePackageBin } from './server/lib/package-bin.js'
 import {
-    buildOpencodeProjectCheckUrl,
     ensureOpenProjectDir,
     validateExistingProjectDir,
 } from './server/lib/cli-utils.js'
-import { STUDIO_APP_PORT } from './shared/default-ports.js'
+import { STUDIO_APP_PORT, STUDIO_OPENCODE_PORT } from './shared/default-ports.js'
 
 type StudioPackageMeta = {
     name: string
@@ -30,7 +29,6 @@ type OpenCommand = {
     openBrowser: boolean
     projectDir: string
     port: number | null
-    opencodeUrl: string | null
     startupAssetTarget: StartupAssetTarget | null
     verbose: boolean
 }
@@ -39,7 +37,6 @@ type DoctorCommand = {
     kind: 'doctor'
     projectDir: string
     port: number
-    opencodeUrl: string | null
     verbose: boolean
 }
 
@@ -95,8 +92,6 @@ Arguments:
 
 Options:
   -p, --port <port>     Port for the Studio server. Defaults to 43100.
-      --opencode-url <url>
-                        Connect to an existing OpenCode instance instead of managed mode.
       --performer <urn>
                         Focus a canvas performer or install/import the performer from the registry.
       --act <urn>
@@ -115,7 +110,7 @@ Examples:
   dot-studio open ~/projects/dance-of-tal --port 3010
   dot-studio open ~/projects/dance-of-tal --act act/@acme/workflows/review-flow
   dot-studio doctor
-  dot-studio doctor ~/projects/dance-of-tal --opencode-url http://localhost:4096`)
+  dot-studio doctor ~/projects/dance-of-tal`)
 }
 
 function failUsage(message: string): never {
@@ -156,7 +151,6 @@ function parseCliArgs(argv: string[]): CliCommand {
     let openBrowser = true
     let projectDir: string | null = null
     let port: number | null = null
-    let opencodeUrl: string | null = null
     let startupAssetTarget: StartupAssetTarget | null = null
     let verbose = false
 
@@ -189,15 +183,6 @@ function parseCliArgs(argv: string[]): CliCommand {
 
         if (arg === '--verbose') {
             verbose = true
-            continue
-        }
-
-        if (arg === '--opencode-url') {
-            opencodeUrl = argv[index + 1] || null
-            if (!opencodeUrl) {
-                failUsage('Missing value for --opencode-url')
-            }
-            index += 1
             continue
         }
 
@@ -246,7 +231,6 @@ function parseCliArgs(argv: string[]): CliCommand {
             kind: 'doctor',
             projectDir: resolvedProjectDir,
             port: port || Number.parseInt(process.env.PORT || '', 10) || DEFAULT_PORT,
-            opencodeUrl: opencodeUrl || process.env.OPENCODE_URL || null,
             verbose,
         }
     }
@@ -256,7 +240,6 @@ function parseCliArgs(argv: string[]): CliCommand {
         openBrowser,
         projectDir: resolvedProjectDir,
         port,
-        opencodeUrl: opencodeUrl || process.env.OPENCODE_URL || null,
         startupAssetTarget,
         verbose,
     }
@@ -456,14 +439,23 @@ async function resolveOpenPort(requestedPort: number | null) {
     let resolvedPort = basePort
 
     if (requestedPort) {
+        if (requestedPort === STUDIO_OPENCODE_PORT) {
+            throw new Error(`Port ${requestedPort} is reserved for the managed OpenCode sidecar. Try a different port with --port.`)
+        }
         if (!(await canListenOnPort(requestedPort))) {
             throw new Error(`Port ${requestedPort} is already in use. Try a different port with --port.`)
         }
         return requestedPort
     }
 
+    if (resolvedPort === STUDIO_OPENCODE_PORT) {
+        resolvedPort += 1
+    }
     while (!(await canListenOnPort(resolvedPort))) {
         resolvedPort += 1
+        if (resolvedPort === STUDIO_OPENCODE_PORT) {
+            resolvedPort += 1
+        }
         if (resolvedPort - basePort > MAX_PORT_SCAN) {
             throw new Error(`Could not find an open port starting from ${basePort}. Try --port with a free port.`)
         }
@@ -485,22 +477,6 @@ function findCommandInPath(command: string) {
 
 function resolveOpencodeExecutable() {
     return resolvePackageBin('opencode-ai', 'opencode') || findCommandInPath('opencode')
-}
-
-async function checkOpencodeReachable(url: string, projectDir: string) {
-    try {
-        const target = buildOpencodeProjectCheckUrl(url, projectDir)
-        const controller = new AbortController()
-        const timeout = setTimeout(() => controller.abort(), 1_500)
-        try {
-            const response = await fetch(target.toString(), { signal: controller.signal })
-            return response.ok
-        } finally {
-            clearTimeout(timeout)
-        }
-    } catch {
-        return false
-    }
 }
 
 async function runDoctor(command: DoctorCommand, packageMeta: StudioPackageMeta) {
@@ -538,49 +514,26 @@ async function runDoctor(command: DoctorCommand, packageMeta: StudioPackageMeta)
         })
     }
 
-    const portAvailable = await canListenOnPort(command.port)
+    const portReserved = command.port === STUDIO_OPENCODE_PORT
+    const portAvailable = !portReserved && await canListenOnPort(command.port)
     checks.push({
         label: 'Studio port',
-        status: portAvailable ? 'ok' : 'warn',
-        detail: portAvailable
+        status: portReserved ? 'fail' : portAvailable ? 'ok' : 'warn',
+        detail: portReserved
+            ? `Port ${command.port} is reserved for the managed OpenCode sidecar`
+            : portAvailable
             ? `Port ${command.port} is available`
             : `Port ${command.port} is in use. dot-studio can use another port unless you force --port.`,
     })
 
-    if (command.opencodeUrl) {
-        let parsedUrl: URL | null = null
-        try {
-            parsedUrl = new URL(command.opencodeUrl)
-        } catch {
-            parsedUrl = null
-        }
-
-        if (!parsedUrl) {
-            checks.push({
-                label: 'OpenCode',
-                status: 'fail',
-                detail: `Invalid --opencode-url: ${command.opencodeUrl}`,
-            })
-        } else {
-        const reachable = await checkOpencodeReachable(parsedUrl.toString(), command.projectDir)
-            checks.push({
-                label: 'OpenCode',
-                status: reachable ? 'ok' : 'fail',
-                detail: reachable
-                    ? `External OpenCode reachable at ${parsedUrl.toString()}`
-                    : `External OpenCode is not reachable at ${parsedUrl.toString()}`,
-            })
-        }
-    } else {
-        const executable = resolveOpencodeExecutable()
-        checks.push({
-            label: 'OpenCode',
-            status: executable ? 'ok' : 'fail',
-            detail: executable
-                ? `Managed mode can start OpenCode via ${executable}`
-                : 'Could not find an OpenCode executable. Install opencode-ai or provide --opencode-url.',
-        })
-    }
+    const executable = resolveOpencodeExecutable()
+    checks.push({
+        label: 'OpenCode',
+        status: executable ? 'ok' : 'fail',
+        detail: executable
+            ? `Managed sidecar can start OpenCode via ${executable}`
+            : 'Could not find an OpenCode executable. Install opencode-ai.',
+    })
 
     console.log('DOT Studio doctor\n')
     for (const check of checks) {
@@ -620,11 +573,7 @@ async function runOpen(command: OpenCommand, packageMeta: StudioPackageMeta) {
     process.env.PROJECT_DIR = resolvedProjectDir
     process.env.DOT_STUDIO_PRODUCTION = '1'
     process.env.PORT = String(resolvedPort)
-    if (command.opencodeUrl) {
-        process.env.OPENCODE_URL = command.opencodeUrl
-    } else {
-        delete process.env.OPENCODE_URL
-    }
+    delete process.env.OPENCODE_URL
 
     const { initializeStudioProject } = await import('./server/services/studio-service.js')
     await initializeStudioProject(resolvedProjectDir)
@@ -634,11 +583,7 @@ async function runOpen(command: OpenCommand, packageMeta: StudioPackageMeta) {
 
     if (command.verbose) {
         console.log(`Opening DOT Studio for ${resolvedProjectDir}`)
-        if (command.opencodeUrl) {
-            console.log(`Using external OpenCode at ${command.opencodeUrl}`)
-        } else {
-            console.log('Using managed OpenCode mode')
-        }
+        console.log('Using managed OpenCode sidecar')
         if (command.startupAssetTarget) {
             console.log(`Startup target: ${command.startupAssetTarget.kind} ${command.startupAssetTarget.urn}`)
         }

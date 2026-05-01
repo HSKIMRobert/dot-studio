@@ -7,17 +7,12 @@ const instanceDisposeMock = vi.fn().mockResolvedValue({})
 const listStudioAssetsMock = vi.fn()
 const searchDotRegistryMock = vi.fn()
 const searchSkillsCatalogMock = vi.fn()
-let managedOpencode = false
 let studioDir = ''
 
 vi.mock('../../lib/opencode.js', () => ({
     getOpencode: async () => ({
         instance: { dispose: instanceDisposeMock },
     }),
-}))
-
-vi.mock('../../lib/opencode-sidecar.js', () => ({
-    isManagedOpencode: () => managedOpencode,
 }))
 
 vi.mock('../../lib/config.js', () => ({
@@ -41,7 +36,6 @@ describe('ensureAssistantAgent', () => {
     beforeEach(async () => {
         executionDir = await fs.mkdtemp(path.join(os.tmpdir(), 'studio-assistant-projection-'))
         studioDir = path.join(executionDir, '.studio-home')
-        managedOpencode = false
         instanceDisposeMock.mockClear()
         listStudioAssetsMock.mockReset().mockResolvedValue([])
         searchDotRegistryMock.mockReset().mockResolvedValue([])
@@ -54,8 +48,8 @@ describe('ensureAssistantAgent', () => {
 
     it('projects builtin skill sibling files and prunes stale siblings', async () => {
         const staleFile = path.join(
-            executionDir,
-            '.opencode',
+            studioDir,
+            'opencode',
             'skills',
             'dot-studio',
             'studio-assistant-skill-creator-guide',
@@ -65,8 +59,8 @@ describe('ensureAssistantAgent', () => {
         await fs.mkdir(path.dirname(staleFile), { recursive: true })
         await fs.writeFile(staleFile, 'stale\n', 'utf-8')
         const staleSkillDir = path.join(
-            executionDir,
-            '.opencode',
+            studioDir,
+            'opencode',
             'skills',
             'dot-studio',
             'legacy-flat-skill',
@@ -80,8 +74,8 @@ describe('ensureAssistantAgent', () => {
 
         expect(agentName).toBe('dot-studio/studio-assistant')
         const projectedTool = await fs.readFile(path.join(
-            executionDir,
-            '.opencode',
+            studioDir,
+            'opencode',
             'tools',
             'apply_studio_actions.ts',
         ), 'utf-8')
@@ -90,16 +84,16 @@ describe('ensureAssistantAgent', () => {
         expect(projectedTool).toContain('rejected the mutation envelope')
         expect(projectedTool).not.toContain('../../shared/assistant-action-protocol.js')
         await expect(fs.readFile(path.join(
-            executionDir,
-            '.opencode',
+            studioDir,
+            'opencode',
             'skills',
             'dot-studio',
             'find-skills',
             'SKILL.md',
         ), 'utf-8')).resolves.toContain('Find Skills')
         await expect(fs.readFile(path.join(
-            executionDir,
-            '.opencode',
+            studioDir,
+            'opencode',
             'skills',
             'dot-studio',
             'studio-assistant-skill-creator-guide',
@@ -128,7 +122,7 @@ describe('ensureAssistantAgent', () => {
         await expect(fs.stat(path.join(ancestorDir, '.opencode', 'tools', 'apply_studio_actions.ts'))).rejects.toMatchObject({ code: 'ENOENT' })
         await expect(fs.stat(path.join(ancestorDir, '.opencode', 'agents', 'dot-studio', 'studio-assistant.md'))).rejects.toMatchObject({ code: 'ENOENT' })
         await expect(fs.stat(path.join(ancestorDir, '.opencode', 'skills', 'dot-studio', 'find-skills'))).rejects.toMatchObject({ code: 'ENOENT' })
-        await expect(fs.stat(path.join(childDir, '.opencode', 'tools', 'apply_studio_actions.ts'))).resolves.toBeTruthy()
+        await expect(fs.stat(path.join(studioDir, 'opencode', 'tools', 'apply_studio_actions.ts'))).resolves.toBeTruthy()
     })
 
     it('removes duplicate assistant projection from descendant directories', async () => {
@@ -148,12 +142,10 @@ describe('ensureAssistantAgent', () => {
         await expect(fs.stat(path.join(childDir, '.opencode', 'tools', 'apply_studio_actions.ts'))).rejects.toMatchObject({ code: 'ENOENT' })
         await expect(fs.stat(path.join(childDir, '.opencode', 'agents', 'dot-studio', 'studio-assistant.md'))).rejects.toMatchObject({ code: 'ENOENT' })
         await expect(fs.stat(path.join(childDir, '.opencode', 'skills', 'dot-studio', 'find-skills'))).rejects.toMatchObject({ code: 'ENOENT' })
-        await expect(fs.stat(path.join(parentDir, '.opencode', 'tools', 'apply_studio_actions.ts'))).resolves.toBeTruthy()
+        await expect(fs.stat(path.join(studioDir, 'opencode', 'tools', 'apply_studio_actions.ts'))).resolves.toBeTruthy()
     })
 
-    it('projects assistant artifacts into the managed global sidecar config and prunes local duplicates', async () => {
-        managedOpencode = true
-
+    it('projects assistant artifacts into the global sidecar config and prunes local duplicates', async () => {
         await fs.mkdir(path.join(executionDir, '.opencode', 'tools'), { recursive: true })
         await fs.mkdir(path.join(executionDir, '.opencode', 'agents', 'dot-studio'), { recursive: true })
         await fs.writeFile(path.join(executionDir, '.opencode', 'tools', 'apply_studio_actions.ts'), 'legacy local tool\n', 'utf-8')

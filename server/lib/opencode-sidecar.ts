@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'child_process'
 import path from 'path'
-import { DEFAULT_PROJECT_DIR, OPENCODE_MANAGED, OPENCODE_URL, STUDIO_DIR } from './config.js'
+import { DEFAULT_PROJECT_DIR, OPENCODE_URL, STUDIO_OPENCODE_CONFIG_DIR } from './config.js'
 import { resolvePackageBinCommand } from './package-bin.js'
 import { STUDIO_OPENCODE_PORT } from '../../shared/default-ports.js'
 
@@ -42,10 +42,6 @@ function resolveCommand(): { command: string; args: string[] } {
         command: process.platform === 'win32' ? 'opencode.cmd' : 'opencode',
         args: [],
     }
-}
-
-export function isManagedOpencode(): boolean {
-    return OPENCODE_MANAGED
 }
 
 export function canRestartOpencodeSidecar(): boolean {
@@ -125,10 +121,6 @@ function stopChildProcess(target: ChildProcess, force = false) {
 }
 
 export async function ensureOpencodeSidecar(): Promise<void> {
-    if (!isManagedOpencode()) {
-        return
-    }
-
     if (startupPromise) {
         return startupPromise
     }
@@ -142,15 +134,11 @@ export async function ensureOpencodeSidecar(): Promise<void> {
         }
     }
 
-    if (await getReachability()) {
-        return
+    if (await getReachability(true)) {
+        throw new Error(`OpenCode sidecar port ${resolvePort()} is already in use by a process not started by this Studio instance. Stop that process or run npm run kill-ports, then start Studio again.`)
     }
 
     startupPromise = (async () => {
-        if (await getReachability()) {
-            return
-        }
-
         const resolvedCommand = resolveCommand()
         const opencode = spawn(
             resolvedCommand.command,
@@ -159,7 +147,7 @@ export async function ensureOpencodeSidecar(): Promise<void> {
                 cwd: path.resolve(DEFAULT_PROJECT_DIR),
                 env: {
                     ...process.env,
-                    OPENCODE_CONFIG_DIR: path.join(STUDIO_DIR, 'opencode'),
+                    OPENCODE_CONFIG_DIR: STUDIO_OPENCODE_CONFIG_DIR,
                     OPENCODE_ENABLE_EXA: process.env.OPENCODE_ENABLE_EXA || '1',
                 },
                 stdio: 'ignore',
@@ -184,13 +172,9 @@ export async function ensureOpencodeSidecar(): Promise<void> {
 }
 
 export async function restartOpencodeSidecar(): Promise<void> {
-    if (!isManagedOpencode()) {
-        throw new Error('OpenCode restart is only available in managed mode.')
-    }
-
     if (!child) {
         if (await getReachability(true)) {
-            throw new Error('Managed OpenCode restart is unavailable because the current daemon was not started by Studio.')
+            throw new Error('Managed OpenCode restart is unavailable because the current sidecar process was not started by this Studio instance.')
         }
         return ensureOpencodeSidecar()
     }

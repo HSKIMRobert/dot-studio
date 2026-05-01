@@ -18,13 +18,13 @@ export const opencodeApi = {
             url: string
             error?: string
             managed?: boolean
-            mode?: 'managed' | 'external'
+            mode?: 'managed'
             restartAvailable?: boolean
             project?: { worktree?: string }
         }>('/api/opencode/health'),
 
     restart: () =>
-        postJSON<{ ok: boolean; managed: boolean; mode: 'managed' | 'external' }>('/api/opencode/restart'),
+        postJSON<{ ok: boolean; managed: boolean; mode: 'managed' }>('/api/opencode/restart'),
 
     applyRuntimeReload: () =>
         postJSON<{

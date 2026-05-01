@@ -1,5 +1,4 @@
 import { getActiveProjectDir } from '../../lib/config.js'
-import { isManagedOpencode } from '../../lib/opencode-sidecar.js'
 import { listSavedWorkspaces } from '../workspace-service.js'
 import { ensureAssistantAgent } from './assistant-service.js'
 
@@ -12,10 +11,6 @@ function uniqueNonEmptyDirs(directories: Array<string | null | undefined>) {
 }
 
 export async function refreshAssistantProjectionOnServerStartup() {
-    if (!isManagedOpencode()) {
-        return
-    }
-
     const savedWorkspaces = await listSavedWorkspaces(true).catch(() => [])
     const candidateDirs = uniqueNonEmptyDirs([
         getActiveProjectDir(),

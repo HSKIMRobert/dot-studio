@@ -9,7 +9,7 @@
 import { getOpencode } from '../lib/opencode.js'
 import { invalidate } from '../lib/cache.js'
 import { OPENCODE_URL } from '../lib/config.js'
-import { isManagedOpencode, canRestartOpencodeSidecar, restartOpencodeSidecar } from '../lib/opencode-sidecar.js'
+import { canRestartOpencodeSidecar, restartOpencodeSidecar } from '../lib/opencode-sidecar.js'
 import { StudioValidationError, unwrapOpencodeResult } from '../lib/opencode-errors.js'
 import {
     readProjectConfigFile,
@@ -47,8 +47,8 @@ function extractResponseData<T>(response: unknown): T | undefined {
 
 export function opencodeModeMeta() {
     return {
-        managed: isManagedOpencode(),
-        mode: isManagedOpencode() ? 'managed' as const : 'external' as const,
+        managed: true,
+        mode: 'managed' as const,
         restartAvailable: canRestartOpencodeSidecar(),
     }
 }
@@ -123,13 +123,7 @@ export async function listOpenCodeAgents(directory: string) {
 }
 
 export async function getGlobalOpenCodeConfig() {
-    try {
-        const oc = await getOpencode()
-        const res = await oc.config.get()
-        return responseData<Record<string, unknown>>(res, {})
-    } catch {
-        return readGlobalConfigFile()
-    }
+    return readGlobalConfigFile()
 }
 
 export async function getStudioMcpCatalog() {
@@ -167,7 +161,7 @@ export async function findTextInProject(directory: string, pattern: string) {
 
 export async function findFilesInProject(directory: string, pattern: string) {
     const oc = await getOpencode()
-    const res = await oc.find.files({ directory, query: pattern })
+    const res = await oc.find.files({ directory, query: pattern, dirs: 'false', type: 'file', limit: 50 })
     return responseData(res, [])
 }
 
@@ -189,22 +183,15 @@ export async function restartManagedOpenCode() {
     await restartOpencodeSidecar()
     return {
         ok: true as const,
-        managed: isManagedOpencode(),
-        mode: isManagedOpencode() ? 'managed' as const : 'external' as const,
+        managed: true,
+        mode: 'managed' as const,
     }
 }
 
 export async function updateGlobalOpenCodeConfig(patch: unknown) {
     const current = await readGlobalConfigFile()
     const nextConfig = mergeOpenCodeConfig(current, patch && typeof patch === 'object' ? patch as Record<string, unknown> : {})
-    try {
-        const oc = await getOpencode()
-        const res = await oc.config.update({ config: nextConfig })
-        invalidate('mcp-servers')
-        return responseData<Record<string, unknown>>(res, nextConfig)
-    } catch {
-        await writeGlobalConfigFile(nextConfig)
-    }
+    await writeGlobalConfigFile(nextConfig)
     invalidate('mcp-servers')
     return nextConfig
 }
@@ -228,11 +215,7 @@ export async function updateStudioMcpCatalog(catalog: unknown): Promise<McpCatal
         tools: nextTools,
     })
 
-    try {
-        await (await getOpencode()).config.update({ config: nextConfig })
-    } catch {
-        await writeGlobalConfigFile(nextConfig, { dispose: false })
-    }
+    await writeGlobalConfigFile(nextConfig, { dispose: false })
     invalidate('mcp-servers')
     return catalog
 }
@@ -400,20 +383,16 @@ export async function runMcpMutation(
 
 export async function connectMcpServer(directory: string, name: string) {
     await validateStudioManagedMcpServer(directory, name)
-    return runMcpMutation(directory, (oc) => oc.mcp.connect({
+    const result = await runMcpMutation(directory, (oc) => oc.mcp.connect({
         name,
         directory,
     }))
+    await verifyMcpConnection(directory, name)
+    return result
 }
 
 export async function validateMcpAuthRequest(directory: string, name: string) {
-    await validateStudioManagedMcpServer(directory, name)
-    const catalog = await readGlobalMcpCatalog()
-    const config = catalog[name]
-
-    if (!config) {
-        throw new StudioValidationError(`MCP server '${name}' is not defined in the Studio MCP library.`, 'fix_input', 404)
-    }
+    const config = await validateStudioManagedMcpServer(directory, name)
 
     if (!('type' in config) || config.type !== 'remote') {
         throw new StudioValidationError(`MCP server '${name}' does not support OAuth authentication.`, 'fix_input', 400)
@@ -425,7 +404,17 @@ export async function validateMcpAuthRequest(directory: string, name: string) {
 }
 
 async function validateStudioManagedMcpServer(directory: string, name: string) {
-    const projectMcpNames = new Set(await readProjectMcpServerNames(directory))
+    const [catalog, projectMcpServerNames] = await Promise.all([
+        readGlobalMcpCatalog(),
+        readProjectMcpServerNames(directory),
+    ])
+    const config = catalog[name]
+
+    if (!config) {
+        throw new StudioValidationError(`MCP server '${name}' is not defined in the Studio MCP library.`, 'fix_input', 404)
+    }
+
+    const projectMcpNames = new Set(projectMcpServerNames)
     if (projectMcpNames.has(name)) {
         throw new StudioValidationError(
             `MCP server '${name}' is shadowed by this workspace's project config. Studio only manages global MCP servers.`,
@@ -433,4 +422,41 @@ async function validateStudioManagedMcpServer(directory: string, name: string) {
             409,
         )
     }
+
+    return config
+}
+
+async function verifyMcpConnection(directory: string, name: string) {
+    const oc = await getOpencode()
+    const status = responseData<McpLiveStatusMap>(await oc.mcp.status({ directory }), {})
+    const current = status[name]
+
+    if (current?.status === 'connected') {
+        return
+    }
+
+    if (!current?.status || current.status === 'disconnected' || current.status === 'unknown') {
+        // OpenCode can return an empty/unknown status map even after a successful
+        // connect call for globally configured MCP servers. Treat the mutation
+        // success as the best available signal in that case.
+        return
+    }
+
+    if (current.status === 'needs_auth') {
+        throw new StudioValidationError(`MCP server '${name}' requires authentication before it can connect.`, 'fix_input', 409)
+    }
+
+    if (current.status === 'needs_client_registration') {
+        throw new StudioValidationError(
+            current.error || `MCP server '${name}' requires OAuth client registration before it can connect.`,
+            'fix_input',
+            409,
+        )
+    }
+
+    throw new StudioValidationError(
+        current.error || `MCP server '${name}' did not reach connected state.`,
+        'retry',
+        502,
+    )
 }

@@ -2,8 +2,7 @@
  * assistant-service.ts — Agent + skill projection for Studio Assistant.
  *
  * Produces:
- *   managed sidecar: ~/.dot-studio/opencode/{agents,skills,tools}/dot-studio/...
- *   external OpenCode: <workspace>/.opencode/{agents,skills,tools}/dot-studio/...
+ *   ~/.dot-studio/opencode/{agents,skills,tools}/dot-studio/...
  *
  * Builtin assistant dances are authored as Agent Skills under:
  *   server/services/studio-assistant/dances/<skill-name>/SKILL.md
@@ -20,7 +19,6 @@ import { parseDanceFromSkillMd } from 'dance-of-tal/contracts'
 import type { AssistantStageContext } from '../../../shared/assistant-actions.js'
 import { STUDIO_DIR } from '../../lib/config.js'
 import { getOpencode } from '../../lib/opencode.js'
-import { isManagedOpencode } from '../../lib/opencode-sidecar.js'
 import { listStudioAssets } from '../asset-service.js'
 import { searchDotRegistry, searchSkillsCatalog } from '../dot-service.js'
 import { syncSkillBundleSiblings } from '../opencode-projection/skill-bundle-sync.js'
@@ -36,9 +34,8 @@ const DANCES_DIR = path.join(__dirname, 'dances')
 
 // ── Target paths ──────────────────────────────────────
 function assistantProjectionRoot(executionDir: string) {
-    return isManagedOpencode()
-        ? path.join(STUDIO_DIR, 'opencode')
-        : path.join(executionDir, '.opencode')
+    void executionDir
+    return path.join(STUDIO_DIR, 'opencode')
 }
 
 function workspaceAssistantProjectionRoot(executionDir: string) {
@@ -584,9 +581,7 @@ export async function ensureAssistantAgent(
     const toolNames = tools.map((tool) => tool.name)
     let changed = false
 
-    if (isManagedOpencode()) {
-        changed = (await removeManagedWorkspaceAssistantProjection(executionDir, skillNames, toolNames)) || changed
-    }
+    changed = (await removeManagedWorkspaceAssistantProjection(executionDir, skillNames, toolNames)) || changed
 
     changed = (await removeDuplicateAssistantProjectionAncestors(
         executionDir,

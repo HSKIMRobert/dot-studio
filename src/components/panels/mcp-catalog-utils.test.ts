@@ -198,4 +198,24 @@ describe('mcp-catalog-utils', () => {
             },
         })
     })
+
+    it('preserves editor draft keys when rebuilding saved catalog drafts', () => {
+        const drafts = buildMcpDrafts({
+            dartlab: {
+                type: 'local',
+                command: ['dartlab-mcp'],
+            },
+        }, [
+            createDraft({
+                key: 'asset-mcp-local-draft',
+                name: 'dartlab',
+                command: 'dartlab-mcp',
+            }),
+        ])
+
+        expect(drafts[0]).toEqual(expect.objectContaining({
+            key: 'asset-mcp-local-draft',
+            name: 'dartlab',
+        }))
+    })
 })

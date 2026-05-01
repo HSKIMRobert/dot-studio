@@ -25,10 +25,11 @@ function resolveDefaultProjectDir() {
 
 // ── Constants ───────────────────────────────────────────
 export const PORT = resolvePort(process.env.PORT, STUDIO_API_PORT)
-export const OPENCODE_URL = process.env.OPENCODE_URL || `http://localhost:${STUDIO_OPENCODE_PORT}`
-export const OPENCODE_MANAGED = !process.env.OPENCODE_URL
 export const DEFAULT_PROJECT_DIR = resolveDefaultProjectDir()
 export const STUDIO_DIR = process.env.STUDIO_DIR || path.join(os.homedir(), '.dot-studio')
+export const STUDIO_OPENCODE_CONFIG_DIR = path.join(STUDIO_DIR, 'opencode')
+export const OPENCODE_PORT = resolvePort(process.env.OPENCODE_PORT, STUDIO_OPENCODE_PORT)
+export const OPENCODE_URL = `http://localhost:${OPENCODE_PORT}`
 export const STUDIO_CONFIG_PATH = path.join(STUDIO_DIR, 'studio-config.json')
 export const IS_PRODUCTION = process.env.DOT_STUDIO_PRODUCTION === '1'
 

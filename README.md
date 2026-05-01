@@ -52,13 +52,9 @@ dot-studio /path/to/project
 This installs the CLI globally and opens Studio for the target directory.
 If the directory has not been initialized as a DOT workspace yet, Studio prepares it automatically.
 
-### Connect to an existing OpenCode instance
+### Managed OpenCode sidecar
 
-DOT Studio can start OpenCode for you, or you can point it to an existing instance:
-
-```bash
-OPENCODE_URL=http://localhost:43102 dot-studio
-```
+DOT Studio starts and owns its OpenCode sidecar automatically. The sidecar uses Studio-owned config under `~/.dot-studio/opencode` so MCP library saves, provider config, and runtime reloads all share one boundary.
 
 Default local ports are grouped in the `43100` range to avoid collisions with more common development defaults:
 
@@ -197,7 +193,7 @@ dot-studio open . --no-open
 dot-studio open . --act act/@acme/workflows/review-flow
 dot-studio open . --port 43111
 dot-studio doctor
-dot-studio doctor ~/projects/dance-of-tal --opencode-url http://localhost:43102
+dot-studio doctor ~/projects/dance-of-tal
 ```
 
 Behavior:

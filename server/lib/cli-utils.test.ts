@@ -3,7 +3,6 @@ import os from 'os'
 import path from 'path'
 import { afterEach, describe, expect, it } from 'vitest'
 import {
-    buildOpencodeProjectCheckUrl,
     ensureOpenProjectDir,
     validateExistingProjectDir,
 } from './cli-utils.js'
@@ -44,13 +43,5 @@ describe('validateExistingProjectDir', () => {
         const targetDir = path.join(parentDir, 'missing')
 
         await expect(validateExistingProjectDir(targetDir)).rejects.toThrow(`Directory not found: ${targetDir}`)
-    })
-})
-
-describe('buildOpencodeProjectCheckUrl', () => {
-    it('uses the requested project directory instead of the shell cwd', () => {
-        const url = buildOpencodeProjectCheckUrl('http://localhost:4096', '/tmp/requested-workspace')
-
-        expect(url.toString()).toBe('http://localhost:4096/project?directory=%2Ftmp%2Frequested-workspace')
     })
 })

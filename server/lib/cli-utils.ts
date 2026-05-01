@@ -25,9 +25,3 @@ export async function ensureOpenProjectDir(projectDir: string) {
     }
     return resolvedProjectDir
 }
-
-export function buildOpencodeProjectCheckUrl(url: string, projectDir: string) {
-    const target = new URL('/project', url)
-    target.searchParams.set('directory', projectDir)
-    return target
-}

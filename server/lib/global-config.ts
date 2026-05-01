@@ -1,22 +1,15 @@
 import fs from 'fs/promises'
-import os from 'os'
 import path from 'path'
 import stripJsonComments from 'strip-json-comments'
 import { getOpencode } from './opencode.js'
+import { STUDIO_OPENCODE_CONFIG_DIR } from './config.js'
+
+export function resolveGlobalConfigDir(): string {
+    return STUDIO_OPENCODE_CONFIG_DIR
+}
 
 export function resolveGlobalConfigPath(): string {
-    const explicitConfigDir = process.env.OPENCODE_CONFIG_DIR?.trim()
-    if (explicitConfigDir) {
-        return path.join(explicitConfigDir, 'opencode.json')
-    }
-
-    if (!process.env.OPENCODE_URL) {
-        const studioDir = process.env.STUDIO_DIR || path.join(os.homedir(), '.dot-studio')
-        return path.join(studioDir, 'opencode', 'opencode.json')
-    }
-
-    const configRoot = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), '.config')
-    return path.join(configRoot, 'opencode', 'opencode.json')
+    return path.join(resolveGlobalConfigDir(), 'opencode.json')
 }
 
 export async function readGlobalConfigFile(): Promise<Record<string, unknown>> {

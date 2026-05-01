@@ -191,8 +191,8 @@ export function useMcpCatalog(workingDir: string, showMcps: boolean): McpCatalog
         setMcpCatalogStatus(null)
         try {
             const nextMcpCatalog: McpCatalog = serializeMcpEntries(entries)
-            await api.mcp.updateCatalog(nextMcpCatalog)
-            setMcpEntries(cloneMcpDraftEntries(entries))
+            const savedCatalog = await api.mcp.updateCatalog(nextMcpCatalog)
+            setMcpEntries(buildMcpDrafts(savedCatalog, entries))
             if (impact && hasMcpCatalogImpact(impact)) {
                 applyCatalogImpactToStudio(impact)
                 setMcpCatalogStatus(`Saved Studio MCP library and updated ${impact.affectedPerformerIds.length} performer reference${impact.affectedPerformerIds.length === 1 ? '' : 's'}.`)

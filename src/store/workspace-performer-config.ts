@@ -235,59 +235,93 @@ export function setPerformerAgentId(set: SetFn, get: GetFn, performerId: string,
 // ── MCP ─────────────────────────────────────────────────
 
 export function addPerformerMcp(set: SetFn, get: GetFn, performerId: string, mcp: { name: string }) {
-    set((s) => ({
-        performers: s.performers.map(a =>
-            a.id === performerId && !a.mcpServerNames.includes(mcp.name)
-                ? (() => {
-                    return applyPerformerPatch(a, { mcpServerNames: [...a.mcpServerNames, mcp.name] })
-                })()
-                : a
-        ),
-        workspaceDirty: true,
-    }))
-    markPerformerProjectionDirty(get, performerId)
-    scheduleLiveActWorkspacePersist(get, performerId)
+    const serverName = mcp.name.trim()
+    if (!serverName) {
+        return
+    }
+    let changed = false
+    set((s) => {
+        const performers = s.performers.map(a => {
+            if (a.id !== performerId || a.mcpServerNames.includes(serverName)) {
+                return a
+            }
+            changed = true
+            return applyPerformerPatch(a, { mcpServerNames: [...a.mcpServerNames, serverName] })
+        })
+        return changed ? { performers, workspaceDirty: true } : {}
+    })
+    if (changed) {
+        markPerformerProjectionDirty(get, performerId)
+        scheduleLiveActWorkspacePersist(get, performerId)
+    }
 }
 
 export function removePerformerMcp(set: SetFn, get: GetFn, performerId: string, mcpName: string) {
-    set((s) => ({
-        performers: s.performers.map(a =>
+    const serverName = mcpName.trim()
+    if (!serverName) {
+        return
+    }
+    let changed = false
+    set((s) => {
+        const performers = s.performers.map(a =>
             a.id === performerId
                 ? (() => {
-                    const mcpServerNames = a.mcpServerNames.filter(name => name !== mcpName)
+                    const mcpServerNames = a.mcpServerNames.filter(name => name !== serverName)
                     const mcpBindingMap = Object.fromEntries(
-                        Object.entries(a.mcpBindingMap || {}).filter(([, serverName]) => serverName !== mcpName),
+                        Object.entries(a.mcpBindingMap || {}).filter(([, mappedName]) => mappedName !== serverName),
                     )
+                    if (
+                        mcpServerNames.length === a.mcpServerNames.length
+                        && Object.keys(mcpBindingMap).length === Object.keys(a.mcpBindingMap || {}).length
+                    ) {
+                        return a
+                    }
+                    changed = true
                     return applyPerformerPatch(a, { mcpServerNames, mcpBindingMap })
                 })()
                 : a
-        ),
-        workspaceDirty: true,
-    }))
-    markPerformerProjectionDirty(get, performerId)
-    scheduleLiveActWorkspacePersist(get, performerId)
+        )
+        return changed ? { performers, workspaceDirty: true } : {}
+    })
+    if (changed) {
+        markPerformerProjectionDirty(get, performerId)
+        scheduleLiveActWorkspacePersist(get, performerId)
+    }
 }
 
 export function setPerformerMcpBinding(set: SetFn, get: GetFn, performerId: string, placeholderName: string, serverName: string | null) {
-    set((s) => ({
-        performers: s.performers.map((performer) => {
+    const placeholder = placeholderName.trim()
+    if (!placeholder) {
+        return
+    }
+    const nextServerName = serverName?.trim() || null
+    let changed = false
+    set((s) => {
+        const performers = s.performers.map((performer) => {
             if (performer.id !== performerId) {
+                return performer
+            }
+            const currentServerName = performer.mcpBindingMap?.[placeholder] || null
+            if (currentServerName === nextServerName) {
                 return performer
             }
             const mcpBindingMap = {
                 ...(performer.mcpBindingMap || {}),
             }
-            if (serverName && serverName.trim()) {
-                mcpBindingMap[placeholderName] = serverName.trim()
+            if (nextServerName) {
+                mcpBindingMap[placeholder] = nextServerName
             } else {
-                delete mcpBindingMap[placeholderName]
+                delete mcpBindingMap[placeholder]
             }
+            changed = true
             return applyPerformerPatch(performer, { mcpBindingMap })
-        }),
-        workspaceDirty: true,
-    }))
-    markPerformerProjectionDirty(get, performerId)
-    scheduleLiveActWorkspacePersist(get, performerId)
+        })
+        return changed ? { performers, workspaceDirty: true } : {}
+    })
+    if (changed) {
+        markPerformerProjectionDirty(get, performerId)
+        scheduleLiveActWorkspacePersist(get, performerId)
+    }
 }
 
 // ── Metadata & visibility ───────────────────────────────

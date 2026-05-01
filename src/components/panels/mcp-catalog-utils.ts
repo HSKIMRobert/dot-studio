@@ -93,11 +93,17 @@ function performerReferencesMcpName(performer: PerformerNode, serverName: string
         || Object.values(performer.mcpBindingMap || {}).includes(serverName)
 }
 
-export function buildMcpDrafts(catalog: McpCatalog): McpEntryDraft[] {
+export function buildMcpDrafts(catalog: McpCatalog, previousEntries: McpEntryDraft[] = []): McpEntryDraft[] {
+    const previousKeyByName = new Map(
+        previousEntries
+            .map((entry) => [entry.name.trim(), entry.key] as const)
+            .filter(([name]) => !!name),
+    )
+
     return Object.entries(catalog)
         .map(([name, rawEntry]) => {
             const entry = rawEntry as McpEntryConfig
-            const base = createMcpEntryDraft(`mcp:${name}`, name)
+            const base = createMcpEntryDraft(previousKeyByName.get(name) || `mcp:${name}`, name)
 
             if (entry.type === 'remote') {
                 return {

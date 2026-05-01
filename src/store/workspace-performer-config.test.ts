@@ -1,7 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createPerformerNode } from '../lib/performers-node'
-import { removePerformerDance, setPerformerModel, setPerformerModelVariant } from './workspace-performer-config'
+import {
+    addPerformerMcp,
+    removePerformerDance,
+    removePerformerMcp,
+    setPerformerMcpBinding,
+    setPerformerModel,
+    setPerformerModelVariant,
+} from './workspace-performer-config'
 import type { StudioState } from './types'
 
 function makeState(): StudioState {
@@ -130,5 +137,82 @@ describe('workspace-performer-config', () => {
         await vi.advanceTimersByTimeAsync(350)
 
         expect(state.saveWorkspace).toHaveBeenCalledTimes(1)
+    })
+
+    it('adds direct MCP selections as performer projection changes', () => {
+        const recordStudioChange = vi.fn()
+        let state: StudioState = {
+            ...makeState(),
+            recordStudioChange,
+        } as unknown as StudioState
+        const get = () => state
+        const set = (partial: Partial<StudioState> | ((value: StudioState) => Partial<StudioState>)) => {
+            const update = typeof partial === 'function' ? partial(state) : partial
+            state = { ...state, ...update }
+        }
+
+        addPerformerMcp(set, get, 'performer-1', { name: 'dartlab' })
+        addPerformerMcp(set, get, 'performer-1', { name: 'dartlab' })
+
+        expect(state.performers[0].mcpServerNames).toEqual(['dartlab'])
+        expect(state.workspaceDirty).toBe(true)
+        expect(recordStudioChange).toHaveBeenCalledTimes(1)
+        expect(recordStudioChange).toHaveBeenCalledWith({ kind: 'performer', performerIds: ['performer-1'] })
+    })
+
+    it('removes direct MCP selections and related placeholder bindings together', () => {
+        const recordStudioChange = vi.fn()
+        let state: StudioState = {
+            ...makeState(),
+            recordStudioChange,
+            performers: [
+                createPerformerNode({
+                    id: 'performer-1',
+                    name: 'Reviewer',
+                    x: 0,
+                    y: 0,
+                    mcpServerNames: ['dartlab', 'openbb-mcp'],
+                    mcpBindingMap: {
+                        market_data: 'dartlab',
+                        filings: 'openbb-mcp',
+                    },
+                }),
+            ],
+        } as unknown as StudioState
+        const get = () => state
+        const set = (partial: Partial<StudioState> | ((value: StudioState) => Partial<StudioState>)) => {
+            const update = typeof partial === 'function' ? partial(state) : partial
+            state = { ...state, ...update }
+        }
+
+        removePerformerMcp(set, get, 'performer-1', 'dartlab')
+        removePerformerMcp(set, get, 'performer-1', 'dartlab')
+
+        expect(state.performers[0].mcpServerNames).toEqual(['openbb-mcp'])
+        expect(state.performers[0].mcpBindingMap).toEqual({ filings: 'openbb-mcp' })
+        expect(recordStudioChange).toHaveBeenCalledTimes(1)
+        expect(recordStudioChange).toHaveBeenCalledWith({ kind: 'performer', performerIds: ['performer-1'] })
+    })
+
+    it('sets and clears portable MCP placeholder bindings', () => {
+        const recordStudioChange = vi.fn()
+        let state: StudioState = {
+            ...makeState(),
+            recordStudioChange,
+        } as unknown as StudioState
+        const get = () => state
+        const set = (partial: Partial<StudioState> | ((value: StudioState) => Partial<StudioState>)) => {
+            const update = typeof partial === 'function' ? partial(state) : partial
+            state = { ...state, ...update }
+        }
+
+        setPerformerMcpBinding(set, get, 'performer-1', 'market_data', 'dartlab')
+        setPerformerMcpBinding(set, get, 'performer-1', 'market_data', 'dartlab')
+        expect(state.performers[0].mcpBindingMap).toEqual({ market_data: 'dartlab' })
+
+        setPerformerMcpBinding(set, get, 'performer-1', 'market_data', null)
+        setPerformerMcpBinding(set, get, 'performer-1', 'market_data', null)
+        expect(state.performers[0].mcpBindingMap).toEqual({})
+        expect(recordStudioChange).toHaveBeenCalledTimes(2)
     })
 })
