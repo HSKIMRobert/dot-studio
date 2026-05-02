@@ -6,7 +6,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.19.0-3c873a?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-0f172a?style=flat-square)](./LICENSE)
 
-[Overview](#overview) • [Quick Start](#quick-start) • [Core Concepts](#core-concepts) • [How Acts Work](#how-acts-work) • [Workflow](#workflow) • [CLI](#cli)
+[Overview](#overview) • [Quick Start](#quick-start) • [Core Concepts](#core-concepts) • [How Acts Work](#how-acts-work) • [Workflow](#workflow) • [Discord Integration](#discord-integration) • [CLI](#cli)
 
 ![DOT Studio screenshot](.github/screenshot.png)
 
@@ -172,6 +172,13 @@ Once a performer or Act is set up, you can use Studio to:
 
 The Studio Assistant is the fastest way to make broad canvas changes.
 Use direct editing when you want precise control, and use the Assistant when you want to scaffold or update Tal, Dance, Performers, or Acts without wiring every step manually.
+
+## Discord Integration
+
+DOT Studio can connect a Discord bot so a Discord server can chat with saved Studio workspaces.
+Discord is a runtime chat surface only: it can talk to standalone performers and Act participants, but it does not create, edit, save, or publish DOT assets.
+
+For the full setup and usage walkthrough, see [Discord Integration Guide](DISCORD_INTEGRATION.md).
 
 ## CLI
 

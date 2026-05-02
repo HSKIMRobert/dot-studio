@@ -1,7 +1,7 @@
 import { Suspense, lazy, useState, useEffect } from 'react';
 import { api } from '../../api';
 import { showToast } from '../../lib/toast';
-import { GitBranch, CheckCircle, AlertCircle, Settings, Moon, Sun, Hexagon, Terminal as TerminalIcon, Github, ChevronDown, Upload, LogIn, UserRound } from 'lucide-react';
+import { GitBranch, CheckCircle, AlertCircle, Settings, Moon, Sun, Hexagon, Terminal as TerminalIcon, Github, ChevronDown, Upload, LogIn, UserRound, MessageCircle } from 'lucide-react';
 import { useStudioStore } from '../../store';
 import { useServerHealth, useDotStatus } from '../../hooks/queries';
 import { useDotLogin } from '../../hooks/useDotLogin';
@@ -20,6 +20,7 @@ const PublishModal = lazy(() =>
 
 export default function WorkspaceToolbar() {
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [settingsInitialTab, setSettingsInitialTab] = useState<'general' | 'providers' | 'models' | 'discord'>('general');
     const [publishOpen, setPublishOpen] = useState(false);
 
     const theme = useStudioStore(s => s.theme);
@@ -41,6 +42,7 @@ export default function WorkspaceToolbar() {
     const serverConnected = !!serverHealthy;
     const dotInitialized = dotStatus?.initialized ?? false;
     const [gitBranch, setGitBranch] = useState<string | null>(null);
+    const [discordOnline, setDiscordOnline] = useState(false);
 
     // Git branch polling
     useEffect(() => {
@@ -57,6 +59,26 @@ export default function WorkspaceToolbar() {
         const timer = setInterval(fetchVcs, 15000);
         return () => clearInterval(timer);
     }, [serverConnected, workingDir]);
+
+    useEffect(() => {
+        if (!serverConnected) {
+            setDiscordOnline(false);
+            return;
+        }
+        const fetchDiscord = () => {
+            api.discord.status()
+                .then((status) => setDiscordOnline(status.online && !!status.config.guildId && status.missingPermissions.length === 0))
+                .catch(() => setDiscordOnline(false));
+        };
+        fetchDiscord();
+        const timer = setInterval(fetchDiscord, 30000);
+        return () => clearInterval(timer);
+    }, [serverConnected]);
+
+    const openSettings = (tab: 'general' | 'providers' | 'models' | 'discord' = 'general') => {
+        setSettingsInitialTab(tab);
+        setSettingsOpen(true);
+    };
 
     const handleDotInit = async () => {
         if (dotInitialized) return;
@@ -161,11 +183,19 @@ export default function WorkspaceToolbar() {
                     <Upload size={12} />
                 </button>
 
+                <button
+                    className="icon-btn"
+                    onClick={() => openSettings('discord')}
+                    title={discordOnline ? 'Discord connected' : 'Discord settings'}
+                >
+                    <MessageCircle size={12} className={discordOnline ? 'icon-active' : ''} />
+                </button>
+
                 <button className="icon-btn" onClick={toggleTheme} title="Toggle Theme">
                     {theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
                 </button>
 
-                <button className="icon-btn" onClick={() => setSettingsOpen(true)} title="Settings">
+                <button className="icon-btn" onClick={() => openSettings('general')} title="Settings">
                     <Settings size={12} />
                 </button>
 
@@ -185,7 +215,7 @@ export default function WorkspaceToolbar() {
             ) : null}
             {settingsOpen ? (
                 <Suspense fallback={null}>
-                    <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+                    <SettingsModal open={settingsOpen} initialTab={settingsInitialTab} onClose={() => setSettingsOpen(false)} />
                 </Suspense>
             ) : null}
         </>

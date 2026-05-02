@@ -24,6 +24,7 @@ import {
 import { showToast } from '../lib/toast'
 import { buildActParticipantChatKey, parseActParticipantChatKey } from '../../shared/chat-targets'
 import { mcpServerNamesFromConfig } from '../../shared/mcp-catalog'
+import { buildActDefinition } from '../../shared/act-definition-builder'
 import type { ActEditorState, ActEditorTab, StudioState } from './types'
 import { clearChatSessionView, registerSessionBinding, syncSessionSnapshot } from './session'
 import {
@@ -437,15 +438,6 @@ export async function applyAuthoritativeActThreads(
     }
 }
 
-function resolveParticipantDescription(
-    binding: WorkspaceActParticipantBinding,
-    performers: StudioState['performers'],
-) {
-    const performer = resolvePerformerFromActBinding(performers, binding)
-    const description = performer?.meta?.authoring?.description?.trim()
-    return description ? description : undefined
-}
-
 export function autoLayoutBindings(bindings: Record<string, WorkspaceActParticipantBinding>) {
     const entries = Object.entries(bindings)
     if (entries.length === 0) return bindings
@@ -678,22 +670,7 @@ export async function importActFromAssetImpl(
 }
 
 export function buildServerActDefinition(act: WorkspaceAct, performers: StudioState['performers'] = []): ActDefinition {
-    return {
-        id: act.id,
-        name: act.name,
-        description: act.description,
-        actRules: act.actRules,
-        participants: Object.fromEntries(
-            Object.entries(act.participants).map(([key, binding]) => [key, {
-                performerRef: binding.performerRef,
-                displayName: binding.displayName,
-                description: resolveParticipantDescription(binding, performers),
-                subscriptions: normalizeSubscriptions(binding.subscriptions),
-            }]),
-        ),
-        relations: act.relations,
-        safety: act.safety,
-    }
+    return buildActDefinition(act, performers)
 }
 
 function hasLiveRuntimeThreads(state: StudioState, actId: string) {

@@ -14,6 +14,7 @@ import compileRoutes from './routes/compile.js'
 import dotRoutes from './routes/dot.js'
 import draftRoutes from './routes/drafts.js'
 import actRuntimeRoutes from './routes/act-runtime.js'
+import discordRoutes from './routes/discord.js'
 import { IS_PRODUCTION } from './lib/config.js'
 import { requestLogger } from './lib/server-logger.js'
 
@@ -37,6 +38,7 @@ function mountApiRoutes(app: Hono) {
     app.route('/', dotRoutes)
     app.route('/', draftRoutes)
     app.route('/', actRuntimeRoutes)
+    app.route('/', discordRoutes)
 }
 
 function applyDevCors(app: Hono) {

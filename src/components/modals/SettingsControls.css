@@ -97,6 +97,29 @@
     flex-shrink: 0;
 }
 
+.stg-input {
+    min-width: 220px;
+    max-width: 280px;
+}
+
+.stg-textarea {
+    resize: vertical;
+    min-height: 72px;
+}
+
+.stg-field-stack {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    align-items: stretch;
+}
+
+.alert--danger {
+    color: var(--danger, #f24822);
+    background: rgba(242, 72, 34, 0.1);
+    margin-bottom: 16px;
+}
+
 .stg-tool-meta {
     display: flex;
     flex-wrap: wrap;

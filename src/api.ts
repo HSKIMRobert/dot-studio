@@ -18,6 +18,7 @@ import { chatApi } from './api-clients/chat'
 import { dotApi } from './api-clients/dot'
 import { opencodeApi } from './api-clients/opencode'
 import { workspaceApi } from './api-clients/workspace'
+import { discordApi } from './api-clients/discord'
 
 export { setApiWorkingDirContext } from './api-core'
 
@@ -202,6 +203,7 @@ export const api = {
     vcs: opencodeApi.vcs,
 
     workspace: workspaceApi,
+    discord: discordApi,
 
     studio: {
         getConfig: () =>

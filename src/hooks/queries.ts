@@ -28,6 +28,7 @@ export const queryKeys = {
     registrySearch: (workingDir: string, q: string) => ['registry-search', workingDir, q] as const,
     danceUpdateChecks: (workingDir: string, assetsKey: string, includeRepoDrift: boolean) =>
         ['dance-update-checks', workingDir, assetsKey, includeRepoDrift ? 'drift' : 'light'] as const,
+    discordStatus: ['discord-status'] as const,
 } as const
 
 // ── Assets ──────────────────────────────────────────────

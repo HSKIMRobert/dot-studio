@@ -1,0 +1,2398 @@
+import {
+    ActionRowBuilder,
+    AutocompleteInteraction,
+    ButtonBuilder,
+    ButtonStyle,
+    ChannelType,
+    ChatInputCommandInteraction,
+    Client,
+    Events,
+    GatewayIntentBits,
+    Guild,
+    Message,
+    MessageFlags,
+    ModalBuilder,
+    ModalSubmitInteraction,
+    PermissionFlagsBits,
+    PermissionsBitField,
+    SlashCommandBuilder,
+    StringSelectMenuBuilder,
+    StringSelectMenuInteraction,
+    TextChannel,
+    TextInputBuilder,
+    TextInputStyle,
+    type ButtonInteraction,
+    type CacheType,
+    type CommandInteraction,
+    type Interaction,
+} from 'discord.js'
+import { randomUUID } from 'crypto'
+import type { QuestionAnswer, PermissionRequest, QuestionRequest } from '@opencode-ai/sdk/v2'
+import { listSavedWorkspaces, getSavedWorkspace } from '../workspace-service.js'
+import {
+    getOrCreateWorkspaceMapping,
+    readDiscordConfig,
+    readDiscordMappings,
+    redactDiscordConfig,
+    updateDiscordMappings,
+    writeDiscordConfig,
+    type DiscordChannelTarget,
+    type DiscordIntegrationConfig,
+    type RedactedDiscordIntegrationConfig,
+} from './config-store.js'
+import {
+    archiveCategoryName,
+    actCategoryName,
+    actThreadMappingKey,
+    controlChannelName,
+    performerCategoryName,
+    performerThreadMappingKey,
+    threadChannelName,
+    workspaceCategoryName,
+} from './sync-plan.js'
+import {
+    createActThreadForDiscord,
+    describeDiscordSessionBlock,
+    ensureActParticipantSession,
+    ensureStandaloneSession,
+    findWorkspaceAct,
+    findWorkspacePerformer,
+    getLatestDiscordAssistantMessageId,
+    isDiscordSessionRunning,
+    listDiscordBackfillMessages,
+    listActThreadsForDiscord,
+    listStandaloneThreadsForDiscord,
+    rejectDiscordQuestion,
+    resolveActParticipantPerformer,
+    respondDiscordPermission,
+    respondDiscordQuestion,
+    sendActParticipantDiscordMessage,
+    sendPerformerDiscordMessage,
+    waitForAssistantReply,
+    type DiscordAssistantReply,
+    type DiscordActSnapshot,
+    type DiscordWorkspaceSnapshot,
+} from './studio-runtime.js'
+import {
+    isDiscordActorAuthorized,
+    summarizeDiscordAccess,
+    type DiscordActorAccess,
+} from './access-control.js'
+
+type DiscordStatus = {
+    config: RedactedDiscordIntegrationConfig
+    online: boolean
+    botUser?: { id: string; username: string }
+    applicationId?: string
+    inviteUrl?: string
+    guilds: Array<{ id: string; name: string }>
+    selectedGuild?: { id: string; name: string }
+    missingPermissions: string[]
+    messageContentLikelyMissing: boolean
+    access: ReturnType<typeof summarizeDiscordAccess>
+    lastError?: string
+}
+
+type SyncResult = {
+    ok: true
+    workspaceId?: string
+    syncedWorkspaces?: number
+    failedWorkspaces?: Array<{ workspaceId: string; workingDir: string; error: string }>
+    categoryId?: string
+    menuChannelId?: string
+}
+
+type SavedDiscordWorkspaceSnapshot = DiscordWorkspaceSnapshot & {
+    schemaVersion?: number
+    markdownEditors?: unknown[]
+    canvasTerminals?: unknown[]
+}
+
+const REQUIRED_PERMISSIONS = [
+    ['View channels', PermissionFlagsBits.ViewChannel],
+    ['Manage channels', PermissionFlagsBits.ManageChannels],
+    ['Send messages', PermissionFlagsBits.SendMessages],
+    ['Read message history', PermissionFlagsBits.ReadMessageHistory],
+] as const
+const MAX_DISCORD_PROMPT_CHARS = 1800
+const ACT_THREAD_SYNC_POLL_MS = 3_000
+const ACT_THREAD_SYNC_TIMEOUT_MS = 30 * 60_000
+const ACT_THREAD_IDLE_CONFIRMATIONS = 40
+
+function discordInviteUrl(applicationId: string) {
+    const permissions = new PermissionsBitField([
+        PermissionFlagsBits.ViewChannel,
+        PermissionFlagsBits.ManageChannels,
+        PermissionFlagsBits.SendMessages,
+        PermissionFlagsBits.ReadMessageHistory,
+    ]).bitfield.toString()
+    return `https://discord.com/oauth2/authorize?client_id=${applicationId}&permissions=${permissions}&scope=bot%20applications.commands`
+}
+
+function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
+function chunkDiscordMessage(content: string) {
+    const chunks: string[] = []
+    let rest = content.trim() || 'Done.'
+    while (rest.length > 0) {
+        chunks.push(rest.slice(0, 1900))
+        rest = rest.slice(1900)
+    }
+    return chunks
+}
+
+function truncateDiscordText(value: string, max: number) {
+    const compact = value.replace(/\s+/g, ' ').trim()
+    return compact.length > max ? `${compact.slice(0, Math.max(0, max - 1))}…` : compact
+}
+
+function permissionTitle(request: PermissionRequest) {
+    const permission = request.permission || 'permission.required'
+    const parts = permission.split('.')
+    const raw = parts[parts.length - 1] || 'Permission'
+    return raw.charAt(0).toUpperCase() + raw.slice(1).replace(/_/g, ' ')
+}
+
+function formatPermissionPrompt(request: PermissionRequest) {
+    const lines = [
+        `**Permission Required: ${truncateDiscordText(permissionTitle(request), 80)}**`,
+        `Permission: \`${truncateDiscordText(request.permission || 'unknown', 120)}\``,
+    ]
+    if (request.patterns?.length) {
+        lines.push(`Patterns: ${request.patterns.slice(0, 8).map((pattern) => `\`${truncateDiscordText(pattern, 80)}\``).join(', ')}`)
+    }
+    if (request.always?.length) {
+        lines.push(`Allow Always will auto-approve: ${request.always.slice(0, 8).map((pattern) => `\`${truncateDiscordText(pattern, 80)}\``).join(', ')}`)
+    }
+    return lines.join('\n')
+}
+
+function formatQuestionPrompt(request: QuestionRequest) {
+    const questions = request.questions || []
+    const lines = ['**Studio Question**']
+    questions.slice(0, 5).forEach((question, index) => {
+        lines.push(`**${index + 1}. ${truncateDiscordText(question.header || 'Question', 80)}**`)
+        lines.push(truncateDiscordText(question.question || '', 300))
+        if (question.options?.length) {
+            lines.push(`Options: ${question.options.slice(0, 8).map((option) => `\`${truncateDiscordText(option.label, 60)}\``).join(', ')}`)
+        }
+    })
+    if (questions.length > 5) {
+        lines.push(`This question flow has ${questions.length} questions. Discord can answer the first 5 here; use Studio for the full wizard.`)
+    }
+    return lines.join('\n')
+}
+
+function workspaceSnapshotFromSaved(workspace: SavedDiscordWorkspaceSnapshot): DiscordWorkspaceSnapshot {
+    return {
+        workingDir: workspace.workingDir,
+        performers: workspace.performers || [],
+        acts: workspace.acts || [],
+    } as DiscordWorkspaceSnapshot
+}
+
+function workspaceLabel(workingDir: string) {
+    const normalized = workingDir.trim().replace(/[\\/]+$/, '')
+    return normalized.split(/[/\\]/).pop() || workingDir || 'workspace'
+}
+
+function participantDisplayName(act: DiscordActSnapshot, participantKey: string) {
+    return act.participants[participantKey]?.displayName?.trim() || participantKey
+}
+
+class DiscordIntegrationService {
+    private client: Client | null = null
+    private startPromise: Promise<void> | null = null
+    private lastError: string | undefined
+    private messageContentLikelyMissing = false
+    private activeDiscordSessionTurns = new Set<string>()
+    private activeActThreadSyncs = new Map<string, { promise: Promise<number>; expiresAt: number }>()
+
+    async initialize() {
+        const config = await readDiscordConfig()
+        if (config.enabled && config.token) {
+            await this.start().catch((error) => {
+                this.lastError = error instanceof Error ? error.message : String(error)
+                console.warn('[discord] Failed to start Discord integration:', this.lastError)
+            })
+        }
+    }
+
+    async getStatus(): Promise<DiscordStatus> {
+        const config = await readDiscordConfig()
+        const guilds = this.client?.guilds.cache.map((guild) => ({ id: guild.id, name: guild.name })) || []
+        const selectedGuild = config.guildId
+            ? this.client?.guilds.cache.get(config.guildId)
+            : null
+        const applicationId = this.client?.application?.id || this.client?.user?.id
+
+        return {
+            config: redactDiscordConfig(config),
+            online: !!this.client?.isReady(),
+            ...(this.client?.user ? { botUser: { id: this.client.user.id, username: this.client.user.username } } : {}),
+            ...(applicationId ? { applicationId, inviteUrl: discordInviteUrl(applicationId) } : {}),
+            guilds,
+            ...(selectedGuild ? { selectedGuild: { id: selectedGuild.id, name: selectedGuild.name } } : {}),
+            missingPermissions: selectedGuild ? this.missingPermissions(selectedGuild) : [],
+            messageContentLikelyMissing: this.messageContentLikelyMissing,
+            access: summarizeDiscordAccess(config),
+            ...(this.lastError ? { lastError: this.lastError } : {}),
+        }
+    }
+
+    async updateConfig(patch: {
+        enabled?: boolean
+        token?: string
+        guildId?: string
+        clearToken?: boolean
+    }) {
+        const config = await writeDiscordConfig(patch)
+        await this.restartForConfig(config)
+        return this.getStatus()
+    }
+
+    async disconnect() {
+        const config = await writeDiscordConfig({ enabled: false, clearToken: true, guildId: '' })
+        await this.stop()
+        return {
+            config: redactDiscordConfig(config),
+            online: false,
+            guilds: [],
+            missingPermissions: [],
+            messageContentLikelyMissing: false,
+            access: summarizeDiscordAccess(config),
+        } satisfies DiscordStatus
+    }
+
+    async syncAllWorkspaces(): Promise<SyncResult> {
+        await this.ensureReady()
+        const workspaces = await listSavedWorkspaces()
+        const mappings = await readDiscordMappings()
+        const targetWorkspaceId = mappings.activeWorkspaceId || workspaces[0]?.id
+        if (!targetWorkspaceId) {
+            return { ok: true, syncedWorkspaces: 0, failedWorkspaces: [] }
+        }
+        const result = await this.syncWorkspace(targetWorkspaceId)
+        return { ...result, syncedWorkspaces: 1, failedWorkspaces: [] }
+    }
+
+    async syncWorkspace(workspaceId: string): Promise<SyncResult> {
+        await this.ensureReady()
+        const config = await readDiscordConfig()
+        const guild = await this.requireGuild(config)
+        const saved = await getSavedWorkspace(workspaceId)
+        if (!saved.ok) {
+            throw new Error(`${saved.error} (${workspaceId})`)
+        }
+        const snapshot = workspaceSnapshotFromSaved(saved.workspace as SavedDiscordWorkspaceSnapshot)
+
+        let result: Awaited<ReturnType<typeof updateDiscordMappings>>
+        try {
+            const savedWorkspaces = await listSavedWorkspaces()
+            result = await updateDiscordMappings(async (mappings) => {
+                const workspaceMapping = getOrCreateWorkspaceMapping(mappings, workspaceId, snapshot.workingDir)
+                mappings.version = 2
+                const archiveCategory = await this.ensureCategory(guild, mappings.archiveCategoryId, archiveCategoryName())
+                mappings.archiveCategoryId = archiveCategory.id
+                const activeCategory = await this.ensureCategory(
+                    guild,
+                    mappings.activeCategoryId || workspaceMapping.categoryId,
+                    workspaceCategoryName(snapshot.workingDir),
+                )
+                await activeCategory.setPosition(0).catch(() => {})
+                mappings.activeCategoryId = activeCategory.id
+                const obsoleteGenericCategoryIds = [
+                    mappings.performerCategoryId,
+                    mappings.actCategoryId,
+                ].filter((categoryId): categoryId is string => !!categoryId)
+                await this.deleteCategories(guild, obsoleteGenericCategoryIds)
+                delete mappings.performerCategoryId
+                delete mappings.actCategoryId
+                mappings.activeWorkspaceId = workspaceId
+                workspaceMapping.categoryId = activeCategory.id
+                workspaceMapping.performerCategories ||= {}
+                workspaceMapping.actCategories ||= {}
+                workspaceMapping.performerThreadChannels ||= {}
+
+                for (const [mappedWorkspaceId, mappedWorkspace] of Object.entries(mappings.workspaces)) {
+                    if (mappedWorkspaceId === workspaceId) continue
+                    const channelIds = [
+                        mappedWorkspace.menuChannelId,
+                        ...Object.values(mappedWorkspace.performerChannels || {}),
+                        ...Object.values(mappedWorkspace.performerThreadChannels || {}),
+                        ...Object.values(mappedWorkspace.actThreadChannels || {}),
+                    ].filter((channelId): channelId is string => !!channelId)
+                    await this.moveChannelsToCategory(guild, channelIds, archiveCategory.id)
+                    await this.deleteCategories(guild, [
+                        ...Object.values(mappedWorkspace.performerCategories || {}),
+                        ...Object.values(mappedWorkspace.actCategories || {}),
+                    ])
+                    mappedWorkspace.performerCategories = {}
+                    mappedWorkspace.actCategories = {}
+                }
+
+                let categoryPosition = 1
+                for (const performer of snapshot.performers || []) {
+                    const category = await this.ensureCategory(
+                        guild,
+                        workspaceMapping.performerCategories[performer.id],
+                        performerCategoryName(performer.name),
+                    )
+                    workspaceMapping.performerCategories[performer.id] = category.id
+                    await category.setPosition(categoryPosition++).catch(() => {})
+                    const threadChannelIds = Object.entries(workspaceMapping.performerThreadChannels || {})
+                        .filter(([key]) => key.startsWith(`${performer.id}:`))
+                        .map(([, channelId]) => channelId)
+                    await this.moveChannelsToCategory(guild, [
+                        workspaceMapping.performerChannels?.[performer.id],
+                        ...threadChannelIds,
+                    ].filter((channelId): channelId is string => !!channelId), category.id)
+                }
+
+                for (const act of snapshot.acts || []) {
+                    const category = await this.ensureCategory(
+                        guild,
+                        workspaceMapping.actCategories[act.id],
+                        actCategoryName(act.name),
+                    )
+                    workspaceMapping.actCategories[act.id] = category.id
+                    await category.setPosition(categoryPosition++).catch(() => {})
+                    const threadChannelIds = Object.entries(workspaceMapping.actThreadChannels || {})
+                        .filter(([key]) => key.startsWith(`${act.id}:`))
+                        .map(([, channelId]) => channelId)
+                    await this.moveChannelsToCategory(guild, threadChannelIds, category.id)
+                }
+                await this.deleteCategories(guild, obsoleteGenericCategoryIds)
+                await archiveCategory.setPosition(categoryPosition).catch(() => {})
+
+                const menuChannel = await this.ensureTextChannel(
+                    guild,
+                    mappings.menuChannelId || workspaceMapping.menuChannelId,
+                    controlChannelName(),
+                    activeCategory.id,
+                    `Dance of Tal Studio control for ${snapshot.workingDir}`,
+                )
+                await menuChannel.setPosition(0).catch(() => {})
+                mappings.menuChannelId = menuChannel.id
+                workspaceMapping.menuChannelId = menuChannel.id
+                mappings.channels[menuChannel.id] = {
+                    kind: 'menu',
+                    workspaceId,
+                    workingDir: snapshot.workingDir,
+                }
+
+                await this.postWorkspaceMenu(menuChannel, workspaceId, snapshot, savedWorkspaces)
+            })
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            throw new Error(`Failed to sync workspace ${snapshot.workingDir}: ${message}`)
+        }
+
+        const workspaceMapping = result.workspaces[workspaceId]
+        return {
+            ok: true,
+            workspaceId,
+            categoryId: result.activeCategoryId || workspaceMapping?.categoryId,
+            menuChannelId: result.menuChannelId || workspaceMapping?.menuChannelId,
+        }
+    }
+
+    private async restartForConfig(config: DiscordIntegrationConfig) {
+        if (!config.enabled || !config.token) {
+            await this.stop()
+            return
+        }
+        await this.start(true)
+    }
+
+    private async start(force = false) {
+        if (!force && this.client?.isReady()) {
+            return
+        }
+        if (this.startPromise && !force) {
+            return this.startPromise
+        }
+        if (force) {
+            await this.stop()
+        } else if (this.client) {
+            this.client.destroy()
+            this.client = null
+        }
+        const config = await readDiscordConfig()
+        if (!config.enabled || !config.token) {
+            return
+        }
+
+        this.startPromise = (async () => {
+            const client = new Client({
+                intents: [
+                    GatewayIntentBits.Guilds,
+                    GatewayIntentBits.GuildMessages,
+                    GatewayIntentBits.MessageContent,
+                ],
+            })
+            this.client = client
+            this.lastError = undefined
+
+            client.on(Events.InteractionCreate, (interaction) => {
+                void this.handleInteraction(interaction).catch((error) => {
+                    console.error('[discord] Interaction failed:', error)
+                    this.lastError = error instanceof Error ? error.message : String(error)
+                    void this.replyInteractionFailure(interaction, error)
+                })
+            })
+            client.on(Events.MessageCreate, (message) => {
+                void this.handleMessage(message).catch((error) => {
+                    console.error('[discord] Message handling failed:', error)
+                    if (message.channel?.isTextBased()) {
+                        void message.reply({
+                            content: `Studio could not handle that message: ${error instanceof Error ? error.message : String(error)}`,
+                            allowedMentions: { parse: [] },
+                        }).catch(() => {})
+                    }
+                })
+            })
+
+            const ready = new Promise<void>((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('Discord bot did not become ready in time.')), 15_000)
+                client.once(Events.ClientReady, () => {
+                    clearTimeout(timeout)
+                    resolve()
+                })
+                client.once(Events.Error, (error) => {
+                    clearTimeout(timeout)
+                    reject(error)
+                })
+            })
+
+            await client.login(config.token)
+            if (!client.isReady()) {
+                await ready
+            }
+            await this.registerCommands()
+        })()
+
+        try {
+            await this.startPromise
+        } finally {
+            this.startPromise = null
+        }
+    }
+
+    private async stop() {
+        if (this.client) {
+            this.client.destroy()
+            this.client = null
+        }
+        this.startPromise = null
+        this.lastError = undefined
+        this.messageContentLikelyMissing = false
+    }
+
+    private async ensureReady() {
+        await this.start()
+        if (!this.client?.isReady()) {
+            throw new Error('Discord bot is not online. Check the saved token and enable the integration.')
+        }
+        return this.client
+    }
+
+    private async requireGuild(config: DiscordIntegrationConfig) {
+        const client = await this.ensureReady()
+        if (!config.guildId) {
+            throw new Error('Select a Discord server before syncing.')
+        }
+        const guild = client.guilds.cache.get(config.guildId) || await client.guilds.fetch(config.guildId).catch(() => null)
+        if (!guild) {
+            throw new Error('The bot cannot see the selected Discord server.')
+        }
+        const missing = this.missingPermissions(guild)
+        if (missing.length > 0) {
+            throw new Error(`Missing Discord permissions: ${missing.join(', ')}`)
+        }
+        return guild
+    }
+
+    private missingPermissions(guild: Guild) {
+        const permissions = guild.members.me?.permissions
+        if (!permissions) {
+            return ['Bot membership not loaded']
+        }
+        return REQUIRED_PERMISSIONS
+            .filter(([, permission]) => !permissions.has(permission))
+            .map(([label]) => label)
+    }
+
+    private async registerCommands() {
+        const client = this.client
+        if (!client?.isReady()) {
+            return
+        }
+        const config = await readDiscordConfig()
+        const commands = [
+            new SlashCommandBuilder()
+                .setName('studio')
+                .setDescription('Dance of Tal Studio controls')
+                .addSubcommand((command) =>
+                    command.setName('menu').setDescription('Refresh the Studio control panel'),
+                )
+                .addSubcommand((command) =>
+                    command.setName('sync').setDescription('Refresh the active Studio workspace'),
+                )
+                .toJSON(),
+            new SlashCommandBuilder()
+                .setName('workspace')
+                .setDescription('Studio workspace controls')
+                .addSubcommand((command) =>
+                    command.setName('active').setDescription('Show the active Studio workspace'),
+                )
+                .addSubcommand((command) =>
+                    command.setName('control').setDescription('Refresh the Studio control panel for the active workspace'),
+                )
+                .addSubcommand((command) =>
+                    command.setName('sync').setDescription('Sync the active Studio workspace into Discord'),
+                )
+                .addSubcommand((command) =>
+                    command
+                        .setName('switch')
+                        .setDescription('Switch the active Studio workspace by saved workspace id or folder name')
+                        .addStringOption((option) =>
+                            option
+                                .setName('workspace')
+                                .setDescription('Saved workspace id, working directory, or folder name')
+                                .setRequired(true),
+                        ),
+                )
+                .toJSON(),
+            new SlashCommandBuilder()
+                .setName('performer')
+                .setDescription('Studio performer controls')
+                .addSubcommand((command) =>
+                    command.setName('new').setDescription('Create a new standalone performer thread from this performer channel'),
+                )
+                .toJSON(),
+            new SlashCommandBuilder()
+                .setName('act')
+                .setDescription('Studio Act controls')
+                .addSubcommand((command) =>
+                    command.setName('participants').setDescription('Show the participants for this Act thread'),
+                )
+                .addSubcommand((command) =>
+                    command
+                        .setName('message')
+                        .setDescription('Send a message to an Act participant from this Act thread')
+                        .addStringOption((option) =>
+                            option
+                                .setName('participant')
+                                .setDescription('Participant in the current Act thread')
+                                .setRequired(true)
+                                .setAutocomplete(true),
+                        )
+                        .addStringOption((option) =>
+                            option
+                                .setName('message')
+                                .setDescription('Message to send')
+                                .setRequired(true)
+                                .setMaxLength(MAX_DISCORD_PROMPT_CHARS),
+                        ),
+                )
+                .addSubcommand((command) =>
+                    command.setName('sync').setDescription('Backfill recent participant messages for this Act thread'),
+                )
+                .toJSON(),
+            new SlashCommandBuilder()
+                .setName('thread')
+                .setDescription('Studio thread controls')
+                .addSubcommand((command) =>
+                    command.setName('new').setDescription('Start a new Studio chat thread for this Discord channel'),
+                )
+                .toJSON(),
+        ]
+
+        if (config.guildId) {
+            await client.application?.commands.set(commands, config.guildId)
+        } else {
+            await client.application?.commands.set(commands)
+        }
+    }
+
+    private async ensureCategory(guild: Guild, channelId: string | undefined, name: string) {
+        const existing = channelId ? await guild.channels.fetch(channelId).catch(() => null) : null
+        if (existing?.type === ChannelType.GuildCategory) {
+            if (existing.name !== name) {
+                await existing.setName(name).catch(() => {})
+            }
+            return existing
+        }
+        return guild.channels.create({
+            name,
+            type: ChannelType.GuildCategory,
+        })
+    }
+
+    private async ensureTextChannel(
+        guild: Guild,
+        channelId: string | undefined,
+        name: string,
+        parentId: string,
+        topic: string,
+    ) {
+        const existing = channelId ? await guild.channels.fetch(channelId).catch(() => null) : null
+        if (existing?.type === ChannelType.GuildText) {
+            const channel = existing as TextChannel
+            if (channel.name !== name) {
+                await channel.setName(name).catch(() => {})
+            }
+            if (channel.parentId !== parentId) {
+                await channel.setParent(parentId).catch(() => {})
+            }
+            if (channel.topic !== topic) {
+                await channel.setTopic(topic).catch(() => {})
+            }
+            return channel
+        }
+        return guild.channels.create({
+            name,
+            type: ChannelType.GuildText,
+            parent: parentId,
+            topic,
+        })
+    }
+
+    private async moveChannelsToCategory(guild: Guild, channelIds: string[], parentId: string) {
+        for (const channelId of Array.from(new Set(channelIds))) {
+            const channel = await guild.channels.fetch(channelId).catch(() => null)
+            if (channel?.type === ChannelType.GuildText && channel.parentId !== parentId) {
+                await channel.setParent(parentId).catch(() => {})
+            }
+        }
+    }
+
+    private async deleteCategories(guild: Guild, categoryIds: string[]) {
+        for (const categoryId of Array.from(new Set(categoryIds))) {
+            const channel = await guild.channels.fetch(categoryId).catch(() => null)
+            if (channel?.type === ChannelType.GuildCategory) {
+                await channel.delete('Dance of Tal Studio inactive workspace category cleanup').catch(() => {})
+            }
+        }
+    }
+
+    private buildWorkspaceMenuComponents(
+        workspaceId: string,
+        snapshot: DiscordWorkspaceSnapshot,
+        savedWorkspaces: Array<{ id: string; workingDir: string }>,
+    ) {
+        const rows: Array<ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>> = []
+        if (savedWorkspaces.length > 0) {
+            rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId(`dot:workspace:${workspaceId}`)
+                    .setPlaceholder('Switch workspace')
+                    .addOptions(savedWorkspaces.slice(0, 25).map((workspace) => ({
+                        label: workspaceLabel(workspace.workingDir).slice(0, 100),
+                        value: workspace.id,
+                        description: workspace.workingDir.slice(0, 100),
+                        default: workspace.id === workspaceId,
+                    }))),
+            ))
+        }
+        const performers = (snapshot.performers || []).slice(0, 25)
+        if (performers.length > 0) {
+            rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId(`dot:performer:${workspaceId}`)
+                    .setPlaceholder('Open performer threads')
+                    .addOptions(performers.map((performer) => ({
+                        label: performer.name.slice(0, 100),
+                        value: performer.id,
+                        description: performer.model ? `${performer.model.provider}/${performer.model.modelId}`.slice(0, 100) : 'No model selected',
+                    }))),
+            ))
+        }
+
+        const acts = (snapshot.acts || []).slice(0, 25)
+        if (acts.length > 0) {
+            rows.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+                new StringSelectMenuBuilder()
+                    .setCustomId(`dot:act:${workspaceId}`)
+                    .setPlaceholder('Open Act threads')
+                    .addOptions(acts.map((act) => ({
+                        label: act.name.slice(0, 100),
+                        value: act.id,
+                        description: `${Object.keys(act.participants || {}).length} participants, ${act.relations?.length || 0} relations`.slice(0, 100),
+                    }))),
+            ))
+        }
+
+        rows.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
+            new ButtonBuilder()
+                .setCustomId(`dot:sync:${workspaceId}`)
+                .setLabel('Sync workspace')
+                .setStyle(ButtonStyle.Secondary),
+        ))
+        return rows.slice(0, 5)
+    }
+
+    private async postWorkspaceMenu(
+        channel: TextChannel,
+        workspaceId: string,
+        snapshot: DiscordWorkspaceSnapshot,
+        savedWorkspaces: Array<{ id: string; workingDir: string }>,
+    ) {
+        const performerCount = snapshot.performers?.length || 0
+        const actCount = snapshot.acts?.length || 0
+        await channel.send({
+            content: [
+                `**Dance of Tal Studio**`,
+                `Workspace: \`${snapshot.workingDir}\``,
+                `Performers: ${performerCount} | Acts: ${actCount}`,
+            ].join('\n'),
+            components: this.buildWorkspaceMenuComponents(workspaceId, snapshot, savedWorkspaces),
+            allowedMentions: { parse: [] },
+        })
+    }
+
+    private async registerPendingInteraction(params: {
+        kind: 'permission' | 'question'
+        workspaceId: string
+        channelId: string
+        workingDir: string
+        sessionId: string
+        request: PermissionRequest | QuestionRequest
+    }) {
+        const id = randomUUID().replace(/-/g, '').slice(0, 16)
+        await updateDiscordMappings((mappings) => {
+            mappings.pendingInteractions ||= {}
+            mappings.pendingInteractions[id] = {
+                kind: params.kind,
+                workspaceId: params.workspaceId,
+                channelId: params.channelId,
+                workingDir: params.workingDir,
+                sessionId: params.sessionId,
+                request: params.request as unknown as Record<string, unknown>,
+            }
+        })
+        return id
+    }
+
+    private async clearPendingInteraction(id: string) {
+        await updateDiscordMappings((mappings) => {
+            if (mappings.pendingInteractions) {
+                delete mappings.pendingInteractions[id]
+            }
+        })
+    }
+
+    private async postAssistantReply(message: Message, target: DiscordChannelTarget, sessionId: string, reply: DiscordAssistantReply) {
+        if (reply.kind === 'message') {
+            for (const chunk of chunkDiscordMessage(reply.content)) {
+                await message.reply({ content: chunk, allowedMentions: { parse: [] } })
+            }
+            return
+        }
+
+        if (reply.kind === 'permission') {
+            const pendingId = await this.registerPendingInteraction({
+                kind: 'permission',
+                workspaceId: target.workspaceId,
+                channelId: message.channelId,
+                workingDir: target.workingDir,
+                sessionId,
+                request: reply.request,
+            })
+            await message.reply({
+                content: formatPermissionPrompt(reply.request),
+                components: [
+                    new ActionRowBuilder<ButtonBuilder>().addComponents(
+                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:reject`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:once`).setLabel('Allow Once').setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:always`).setLabel('Allow Always').setStyle(ButtonStyle.Primary),
+                    ),
+                ],
+                allowedMentions: { parse: [] },
+            })
+            return
+        }
+
+        const pendingId = await this.registerPendingInteraction({
+            kind: 'question',
+            workspaceId: target.workspaceId,
+            channelId: message.channelId,
+            workingDir: target.workingDir,
+            sessionId,
+            request: reply.request,
+        })
+        await message.reply({
+            content: formatQuestionPrompt(reply.request),
+            components: [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder().setCustomId(`dot:q-answer:${pendingId}`).setLabel('Answer').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId(`dot:q-reject:${pendingId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+                ),
+            ],
+            allowedMentions: { parse: [] },
+        })
+    }
+
+    private async postAssistantReplyToChannel(
+        channel: TextChannel,
+        pending: { workspaceId: string; workingDir: string; channelId: string },
+        sessionId: string,
+        reply: DiscordAssistantReply,
+    ) {
+        if (reply.kind === 'message') {
+            for (const chunk of chunkDiscordMessage(reply.content)) {
+                await channel.send({ content: chunk, allowedMentions: { parse: [] } })
+            }
+            return
+        }
+
+        if (reply.kind === 'permission') {
+            const pendingId = await this.registerPendingInteraction({
+                kind: 'permission',
+                workspaceId: pending.workspaceId,
+                channelId: pending.channelId,
+                workingDir: pending.workingDir,
+                sessionId,
+                request: reply.request,
+            })
+            await channel.send({
+                content: formatPermissionPrompt(reply.request),
+                components: [
+                    new ActionRowBuilder<ButtonBuilder>().addComponents(
+                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:reject`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:once`).setLabel('Allow Once').setStyle(ButtonStyle.Secondary),
+                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:always`).setLabel('Allow Always').setStyle(ButtonStyle.Primary),
+                    ),
+                ],
+                allowedMentions: { parse: [] },
+            })
+            return
+        }
+
+        const pendingId = await this.registerPendingInteraction({
+            kind: 'question',
+            workspaceId: pending.workspaceId,
+            channelId: pending.channelId,
+            workingDir: pending.workingDir,
+            sessionId,
+            request: reply.request,
+        })
+        await channel.send({
+            content: formatQuestionPrompt(reply.request),
+            components: [
+                new ActionRowBuilder<ButtonBuilder>().addComponents(
+                    new ButtonBuilder().setCustomId(`dot:q-answer:${pendingId}`).setLabel('Answer').setStyle(ButtonStyle.Primary),
+                    new ButtonBuilder().setCustomId(`dot:q-reject:${pendingId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+                ),
+            ],
+            allowedMentions: { parse: [] },
+        })
+    }
+
+    private async backfillSessionHistory(params: {
+        channel: TextChannel
+        workspaceId: string
+        workingDir: string
+        sessionId: string
+        assistantLabel: string
+        limit?: number
+        announce?: boolean
+        includeUserMessages?: boolean
+    }) {
+        const mappings = await readDiscordMappings()
+        const workspaceMapping = getOrCreateWorkspaceMapping(mappings, params.workspaceId, params.workingDir)
+        workspaceMapping.backfilledMessageIds ||= {}
+        const known = workspaceMapping.backfilledMessageIds[params.channel.id] || []
+        const messages = await listDiscordBackfillMessages({
+            workingDir: params.workingDir,
+            sessionId: params.sessionId,
+            assistantLabel: params.assistantLabel,
+            knownMessageIds: known,
+            limit: params.limit || 20,
+            includeUserMessages: params.includeUserMessages,
+        }).catch(() => [])
+        if (messages.length === 0) {
+            return 0
+        }
+
+        if (params.announce !== false) {
+            await params.channel.send({
+                content: `Backfilled ${messages.length} recent Studio message(s).`,
+                allowedMentions: { parse: [] },
+            })
+        }
+        for (const message of messages) {
+            for (const chunk of chunkDiscordMessage(message.content)) {
+                await params.channel.send({ content: chunk, allowedMentions: { parse: [] } })
+            }
+        }
+        await updateDiscordMappings((current) => {
+            const currentWorkspace = getOrCreateWorkspaceMapping(current, params.workspaceId, params.workingDir)
+            currentWorkspace.backfilledMessageIds ||= {}
+            currentWorkspace.backfilledMessageIds[params.channel.id] = Array.from(new Set([
+                ...(currentWorkspace.backfilledMessageIds[params.channel.id] || []),
+                ...messages.map((message) => message.id),
+            ])).slice(-500)
+        })
+        return messages.length
+    }
+
+    private async handleInteraction(interaction: unknown) {
+        if (this.isDiscordInteraction(interaction)) {
+            const allowed = await this.authorizeInteraction(interaction)
+            if (!allowed) {
+                if (interaction instanceof AutocompleteInteraction) {
+                    await interaction.respond([]).catch(() => {})
+                    return
+                }
+                await this.replyUnauthorized(interaction)
+                return
+            }
+        }
+        if (interaction instanceof AutocompleteInteraction) {
+            await this.handleAutocomplete(interaction)
+            return
+        }
+        if (interaction instanceof ChatInputCommandInteraction) {
+            await this.handleCommand(interaction)
+            return
+        }
+        if (interaction instanceof StringSelectMenuInteraction) {
+            await this.handleSelect(interaction)
+            return
+        }
+        if (typeof interaction === 'object' && interaction && 'isButton' in interaction && typeof interaction.isButton === 'function' && interaction.isButton()) {
+            await this.handleButton(interaction as ButtonInteraction)
+            return
+        }
+        if (interaction instanceof ModalSubmitInteraction) {
+            await this.handleModalSubmit(interaction)
+        }
+    }
+
+    private isDiscordInteraction(interaction: unknown): interaction is Interaction<CacheType> {
+        return typeof interaction === 'object' && interaction !== null && 'user' in interaction && 'guildId' in interaction
+    }
+
+    private interactionRoleIds(interaction: Interaction<CacheType>) {
+        const member = interaction.member
+        if (!member) {
+            return []
+        }
+        const roles = (member as { roles?: unknown }).roles
+        if (Array.isArray(roles)) {
+            return roles.filter((role): role is string => typeof role === 'string')
+        }
+        if (roles && typeof roles === 'object' && 'cache' in roles) {
+            const cache = (roles as { cache?: { keys?: () => IterableIterator<string> } }).cache
+            if (cache?.keys) {
+                return Array.from(cache.keys())
+            }
+        }
+        return []
+    }
+
+    private actorFromInteraction(interaction: Interaction<CacheType>): DiscordActorAccess {
+        return {
+            userId: interaction.user.id,
+            roleIds: this.interactionRoleIds(interaction),
+            canManageGuild: interaction.memberPermissions?.has(PermissionFlagsBits.ManageGuild) === true,
+        }
+    }
+
+    private actorFromMessage(message: Message): DiscordActorAccess {
+        return {
+            userId: message.author.id,
+            roleIds: message.member?.roles.cache.map((role) => role.id) || [],
+            canManageGuild: message.member?.permissions.has(PermissionFlagsBits.ManageGuild) === true,
+        }
+    }
+
+    private async authorizeInteraction(interaction: Interaction<CacheType>) {
+        if (!interaction.guildId) {
+            return false
+        }
+        const config = await readDiscordConfig()
+        if (config.guildId && interaction.guildId !== config.guildId) {
+            return false
+        }
+        return isDiscordActorAuthorized(config, this.actorFromInteraction(interaction))
+    }
+
+    private async authorizeMessage(message: Message) {
+        const config = await readDiscordConfig()
+        if (config.guildId && message.guildId !== config.guildId) {
+            return false
+        }
+        return isDiscordActorAuthorized(config, this.actorFromMessage(message))
+    }
+
+    private async replyUnauthorized(interaction: Interaction<CacheType>) {
+        const content = 'You are not authorized to use this Studio Discord integration. Ask a server manager or a configured Studio Discord admin role.'
+        if ('replied' in interaction && 'deferred' in interaction && 'reply' in interaction && typeof interaction.reply === 'function') {
+            const command = interaction as CommandInteraction
+            if (command.replied || command.deferred) {
+                await command.followUp({ content, flags: MessageFlags.Ephemeral }).catch(() => {})
+            } else {
+                await command.reply({ content, flags: MessageFlags.Ephemeral }).catch(() => {})
+            }
+        }
+    }
+
+    private async replyInteractionFailure(interaction: Interaction<CacheType>, error: unknown) {
+        const content = `Studio Discord sync failed: ${error instanceof Error ? error.message : String(error)}`
+        if ('replied' in interaction && 'deferred' in interaction && 'reply' in interaction && typeof interaction.reply === 'function') {
+            const command = interaction as CommandInteraction
+            if (command.replied || command.deferred) {
+                await command.followUp({ content, flags: MessageFlags.Ephemeral }).catch(() => {})
+            } else {
+                await command.reply({ content, flags: MessageFlags.Ephemeral }).catch(() => {})
+            }
+        }
+    }
+
+    private async handleCommand(interaction: ChatInputCommandInteraction) {
+        if (interaction.commandName === 'studio') {
+            await this.handleLegacyStudioCommand(interaction)
+            return
+        }
+        if (interaction.commandName === 'workspace') {
+            await this.handleWorkspaceCommand(interaction)
+            return
+        }
+        if (interaction.commandName === 'performer') {
+            await this.handlePerformerCommand(interaction)
+            return
+        }
+        if (interaction.commandName === 'act') {
+            await this.handleActCommand(interaction)
+            return
+        }
+        if (interaction.commandName === 'thread' && interaction.options.getSubcommand() === 'new') {
+            await this.handleNewPerformerThreadCommand(interaction)
+        }
+    }
+
+    private async handleAutocomplete(interaction: AutocompleteInteraction) {
+        if (interaction.commandName !== 'act') {
+            await interaction.respond([]).catch(() => {})
+            return
+        }
+        const subcommand = interaction.options.getSubcommand(false)
+        const focused = interaction.options.getFocused(true)
+        if (subcommand !== 'message' || focused.name !== 'participant') {
+            await interaction.respond([]).catch(() => {})
+            return
+        }
+        const target = (await readDiscordMappings()).channels[interaction.channelId]
+        if (!target || target.kind !== 'act-thread') {
+            await interaction.respond([]).catch(() => {})
+            return
+        }
+        const snapshot = await this.loadSnapshotForTarget(target).catch(() => null)
+        const act = snapshot ? findWorkspaceAct(snapshot, target.actId) : null
+        if (!act) {
+            await interaction.respond([]).catch(() => {})
+            return
+        }
+        const query = String(focused.value || '').trim().toLowerCase()
+        const choices = Object.entries(act.participants || {})
+            .map(([participantKey, binding]) => ({
+                name: truncateDiscordText(binding.displayName || participantKey, 100),
+                value: participantKey.slice(0, 100),
+            }))
+            .filter((choice) => {
+                if (!query) return true
+                return choice.name.toLowerCase().includes(query) || choice.value.toLowerCase().includes(query)
+            })
+            .slice(0, 25)
+        await interaction.respond(choices).catch(() => {})
+    }
+
+    private async handleLegacyStudioCommand(interaction: ChatInputCommandInteraction) {
+        const subcommand = interaction.options.getSubcommand()
+        if (subcommand === 'sync') {
+            await this.handleWorkspaceSyncCommand(interaction)
+            return
+        }
+        if (subcommand === 'menu') {
+            await this.handleWorkspaceControlCommand(interaction)
+        }
+    }
+
+    private async handleWorkspaceCommand(interaction: ChatInputCommandInteraction) {
+        const subcommand = interaction.options.getSubcommand()
+        if (subcommand === 'active') {
+            await this.handleWorkspaceActiveCommand(interaction)
+            return
+        }
+        if (subcommand === 'control') {
+            await this.handleWorkspaceControlCommand(interaction)
+            return
+        }
+        if (subcommand === 'sync') {
+            await this.handleWorkspaceSyncCommand(interaction)
+            return
+        }
+        if (subcommand === 'switch') {
+            await this.handleWorkspaceSwitchCommand(interaction)
+        }
+    }
+
+    private async handlePerformerCommand(interaction: ChatInputCommandInteraction) {
+        if (interaction.options.getSubcommand() === 'new') {
+            await this.handleNewPerformerThreadCommand(interaction)
+        }
+    }
+
+    private async handleActCommand(interaction: ChatInputCommandInteraction) {
+        const subcommand = interaction.options.getSubcommand()
+        if (subcommand === 'participants') {
+            await this.handleActParticipantsCommand(interaction)
+            return
+        }
+        if (subcommand === 'message') {
+            await this.handleActMessageCommand(interaction)
+            return
+        }
+        if (subcommand === 'sync') {
+            await this.handleActSyncCommand(interaction)
+        }
+    }
+
+    private async handleWorkspaceActiveCommand(interaction: ChatInputCommandInteraction) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        const mappings = await readDiscordMappings()
+        const workspaceId = mappings.activeWorkspaceId
+        if (!workspaceId) {
+            await interaction.editReply('No active Studio workspace is synced yet.')
+            return
+        }
+        const saved = await getSavedWorkspace(workspaceId)
+        if (!saved.ok) {
+            await interaction.editReply(`The active workspace mapping is stale: ${saved.error}`)
+            return
+        }
+        const snapshot = workspaceSnapshotFromSaved(saved.workspace as SavedDiscordWorkspaceSnapshot)
+        await interaction.editReply(`Active workspace: ${workspaceLabel(snapshot.workingDir)}\n${snapshot.workingDir}`)
+    }
+
+    private async handleWorkspaceControlCommand(interaction: ChatInputCommandInteraction) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        const mappings = await readDiscordMappings()
+        const target = mappings.channels[interaction.channelId]
+        const workspaceId = target?.workspaceId || mappings.activeWorkspaceId
+        if (!workspaceId) {
+            await interaction.editReply('No active Studio workspace is synced yet.')
+            return
+        }
+        await this.syncWorkspace(workspaceId)
+        await interaction.editReply('Studio control refreshed.')
+    }
+
+    private async handleWorkspaceSyncCommand(interaction: ChatInputCommandInteraction) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        const result = await this.syncAllWorkspaces()
+        const failures = result.failedWorkspaces || []
+        const failureSummary = failures.length > 0
+            ? `\nFailed ${failures.length}: ${failures.slice(0, 3).map((failure) => `${failure.workingDir}: ${failure.error}`).join(' | ')}${failures.length > 3 ? ' | ...' : ''}`
+            : ''
+        await interaction.editReply(`Synced the active Studio workspace and refreshed the workspace selector.${failureSummary}`)
+    }
+
+    private async handleWorkspaceSwitchCommand(interaction: ChatInputCommandInteraction) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        const input = interaction.options.getString('workspace', true).trim()
+        const workspaces = await listSavedWorkspaces()
+        const normalized = input.toLowerCase()
+        const matches = workspaces.filter((workspace) => {
+            const label = workspaceLabel(workspace.workingDir).toLowerCase()
+            return workspace.id === input
+                || workspace.workingDir === input
+                || label === normalized
+        })
+        if (matches.length === 0) {
+            await interaction.editReply('No saved Studio workspace matched that id, path, or folder name. Use the studio-control workspace selector for the safest switch path.')
+            return
+        }
+        if (matches.length > 1) {
+            await interaction.editReply(`Multiple saved Studio workspaces match "${input}". Use the exact saved workspace id instead.`)
+            return
+        }
+        await this.syncWorkspace(matches[0].id)
+        await interaction.editReply(`Active workspace switched to ${workspaceLabel(matches[0].workingDir)}.`)
+    }
+
+    private async handleNewPerformerThreadCommand(interaction: ChatInputCommandInteraction) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        const channel = interaction.channel
+        if (!channel?.isTextBased()) {
+            await interaction.editReply('This command only works in Studio text channels.')
+            return
+        }
+        const target = (await readDiscordMappings()).channels[interaction.channelId]
+        if (!target || target.kind !== 'performer') {
+            await interaction.editReply('New standalone performer threads can only be started from performer thread channels.')
+            return
+        }
+        const snapshot = await this.loadSnapshotForTarget(target)
+        const performer = findWorkspacePerformer(snapshot, target.performerId)
+        if (!performer) {
+            await interaction.editReply('That performer is no longer present in the saved Studio workspace.')
+            return
+        }
+        const sessionId = await ensureStandaloneSession({
+            workingDir: target.workingDir,
+            performer,
+        })
+        const threadChannel = await this.ensurePerformerThreadChannel(target.workspaceId, snapshot, target.performerId, sessionId)
+        await interaction.editReply(`Created ${threadChannel}.`)
+    }
+
+    private async handleActParticipantsCommand(interaction: ChatInputCommandInteraction) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        const target = (await readDiscordMappings()).channels[interaction.channelId]
+        if (!target || target.kind !== 'act-thread') {
+            await interaction.editReply('Act participants are only available from Act thread channels.')
+            return
+        }
+        const snapshot = await this.loadSnapshotForTarget(target)
+        const act = findWorkspaceAct(snapshot, target.actId)
+        if (!act) {
+            await interaction.editReply('That Act is no longer present in the saved Studio workspace.')
+            return
+        }
+        const lines = Object.keys(act.participants || {}).map((participantKey) => {
+            const name = participantDisplayName(act, participantKey)
+            return `- ${name}`
+        })
+        await interaction.editReply({
+            content: lines.length
+                ? `Participants for this Act thread:\n${lines.join('\n')}`
+                : 'This Act has no participants.',
+            allowedMentions: { parse: [] },
+        })
+    }
+
+    private async handleActMessageCommand(interaction: ChatInputCommandInteraction) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        if (!(interaction.channel instanceof TextChannel)) {
+            await interaction.editReply('Act messages can only be sent from Act thread text channels.')
+            return
+        }
+        const target = (await readDiscordMappings()).channels[interaction.channelId]
+        if (!target || target.kind !== 'act-thread') {
+            await interaction.editReply('Act messages can only be sent from Act thread channels.')
+            return
+        }
+        const participantKey = interaction.options.getString('participant', true).trim()
+        const content = interaction.options.getString('message', true).trim()
+        if (!content) {
+            await interaction.editReply('Type a message before sending.')
+            return
+        }
+        if (content.length > MAX_DISCORD_PROMPT_CHARS) {
+            await interaction.editReply(`Discord Studio prompts are limited to ${MAX_DISCORD_PROMPT_CHARS} characters.`)
+            return
+        }
+        const snapshot = await this.loadSnapshotForTarget(target)
+        const act = findWorkspaceAct(snapshot, target.actId)
+        if (!act) {
+            await interaction.editReply('That Act is no longer present in the saved Studio workspace.')
+            return
+        }
+        if (!act.participants?.[participantKey]) {
+            const names = Object.keys(act.participants || {}).map((key) => participantDisplayName(act, key))
+            await interaction.editReply({
+                content: names.length
+                    ? `That participant is not in this Act thread. Use the participant autocomplete for one of: ${names.join(', ')}.`
+                    : 'This Act has no participants.',
+                allowedMentions: { parse: [] },
+            })
+            return
+        }
+        const result = await this.sendActParticipantInput({
+            channel: interaction.channel,
+            target,
+            participantKey,
+            content,
+        })
+        await interaction.editReply(result)
+    }
+
+    private async handleActSyncCommand(interaction: ChatInputCommandInteraction) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        const channel = interaction.channel
+        if (!(channel instanceof TextChannel)) {
+            await interaction.editReply('Act sync only works in Act thread text channels.')
+            return
+        }
+        const target = (await readDiscordMappings()).channels[interaction.channelId]
+        if (!target || target.kind !== 'act-thread') {
+            await interaction.editReply('Act sync only works from Act thread channels.')
+            return
+        }
+        const snapshot = await this.loadSnapshotForTarget(target)
+        const act = findWorkspaceAct(snapshot, target.actId)
+        if (!act) {
+            await interaction.editReply('That Act is no longer present in the saved Studio workspace.')
+            return
+        }
+        const threads = await listActThreadsForDiscord(target.workingDir, target.actId)
+        const thread = threads.threads.find((entry) => entry.id === target.threadId)
+        if (!thread) {
+            await interaction.editReply('That Act thread is no longer available.')
+            return
+        }
+        const count = await this.syncActThreadParticipantHistory({
+            channel,
+            target,
+            act,
+            thread,
+            limitPerParticipant: 20,
+        })
+        await this.refreshActThreadChannelName(channel, target)
+        await interaction.editReply(count > 0
+            ? `Synced ${count} recent participant message${count === 1 ? '' : 's'} into this Act thread.`
+            : 'This Act thread is already up to date.')
+    }
+
+    private async handleSelect(interaction: StringSelectMenuInteraction) {
+        const [prefix, kind, workspaceId] = interaction.customId.split(':')
+        if (prefix !== 'dot') {
+            return
+        }
+        if (kind === 'q-select' && workspaceId) {
+            await this.handleQuestionSelect(interaction, workspaceId)
+            return
+        }
+        if (!workspaceId) {
+            return
+        }
+        const value = interaction.values[0]
+        if (!value) {
+            await interaction.reply({ content: 'Nothing selected.', flags: MessageFlags.Ephemeral })
+            return
+        }
+        if (kind === 'workspace') {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+            await this.syncWorkspace(value)
+            await interaction.editReply('Active Studio workspace switched.')
+            return
+        }
+        const saved = await getSavedWorkspace(workspaceId)
+        if (!saved.ok) {
+            await interaction.reply({ content: saved.error, flags: MessageFlags.Ephemeral })
+            return
+        }
+        const snapshot = workspaceSnapshotFromSaved(saved.workspace as SavedDiscordWorkspaceSnapshot)
+
+        if (kind === 'performer') {
+            const performer = findWorkspacePerformer(snapshot, value)
+            if (!performer) {
+                await interaction.reply({ content: 'Performer not found in the saved workspace.', flags: MessageFlags.Ephemeral })
+                return
+            }
+            const threads = (await listStandaloneThreadsForDiscord(snapshot.workingDir, performer.id)).slice(0, 25)
+            const components: Array<ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>> = []
+            if (threads.length > 0) {
+                components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+                    new StringSelectMenuBuilder()
+                        .setCustomId(`dot:performer-thread:${workspaceId}:${performer.id}`)
+                        .setPlaceholder('Open saved performer thread')
+                        .addOptions(threads.map((thread) => ({
+                            label: thread.name.slice(0, 100),
+                            value: thread.id,
+                            description: thread.status || 'saved',
+                        }))),
+                ))
+            }
+            components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`dot:new-performer-thread:${workspaceId}:${performer.id}`)
+                    .setLabel('New performer thread')
+                    .setStyle(ButtonStyle.Primary),
+            ))
+            await interaction.reply({
+                content: `Performer: **${performer.name}**`,
+                components: components.slice(0, 5),
+                flags: MessageFlags.Ephemeral,
+                allowedMentions: { parse: [] },
+            })
+            return
+        }
+
+        if (kind === 'performer-thread') {
+            const [, , selectedWorkspaceId, performerId] = interaction.customId.split(':')
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+            const channel = await this.ensurePerformerThreadChannel(selectedWorkspaceId, snapshot, performerId, value)
+            await interaction.editReply(`Opened ${channel}.`)
+            return
+        }
+
+        if (kind === 'act') {
+            const act = findWorkspaceAct(snapshot, value)
+            if (!act) {
+                await interaction.reply({ content: 'Act not found in the saved workspace.', flags: MessageFlags.Ephemeral })
+                return
+            }
+            const threads = (await listActThreadsForDiscord(snapshot.workingDir, act.id)).threads.slice(0, 25)
+            const components: Array<ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>> = []
+            if (threads.length > 0) {
+                components.push(new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+                    new StringSelectMenuBuilder()
+                        .setCustomId(`dot:act-thread:${workspaceId}:${act.id}`)
+                        .setPlaceholder('Open saved Act thread')
+                        .addOptions(threads.map((thread) => ({
+                            label: (thread.name || `Thread ${thread.id.slice(0, 6)}`).slice(0, 100),
+                            value: thread.id,
+                            description: thread.status,
+                        }))),
+                ))
+            }
+            components.push(new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder()
+                    .setCustomId(`dot:new-act-thread:${workspaceId}:${act.id}`)
+                    .setLabel('New Act thread')
+                    .setStyle(ButtonStyle.Primary),
+            ))
+            await interaction.reply({
+                content: `Act: **${act.name}**`,
+                components: components.slice(0, 5),
+                flags: MessageFlags.Ephemeral,
+                allowedMentions: { parse: [] },
+            })
+            return
+        }
+
+        if (kind === 'act-thread') {
+            const [, , selectedWorkspaceId, actId] = interaction.customId.split(':')
+            const act = findWorkspaceAct(snapshot, actId)
+            if (!act) {
+                await interaction.reply({ content: 'Act not found in the saved workspace.', flags: MessageFlags.Ephemeral })
+                return
+            }
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+            const channel = await this.ensureActThreadChannel(selectedWorkspaceId, snapshot, act, value)
+            await interaction.editReply(`Opened ${channel}.`)
+        }
+    }
+
+    private async handleButton(interaction: ButtonInteraction) {
+        const [prefix, kind, workspaceId, entityId] = interaction.customId.split(':')
+        if (prefix !== 'dot') {
+            return
+        }
+        if (kind === 'perm') {
+            await this.handlePermissionButton(interaction)
+            return
+        }
+        if (kind === 'q-answer') {
+            await this.handleQuestionAnswerButton(interaction)
+            return
+        }
+        if (kind === 'q-custom') {
+            await this.handleQuestionCustomButton(interaction)
+            return
+        }
+        if (kind === 'q-reject') {
+            await this.handleQuestionRejectButton(interaction)
+            return
+        }
+        if (kind === 'sync' && workspaceId) {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+            await this.syncWorkspace(workspaceId)
+            await interaction.editReply('Workspace synced.')
+            return
+        }
+        if (kind === 'new-performer-thread' && workspaceId && entityId) {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+            const saved = await getSavedWorkspace(workspaceId)
+            if (!saved.ok) {
+                await interaction.editReply(saved.error)
+                return
+            }
+            const snapshot = workspaceSnapshotFromSaved(saved.workspace as SavedDiscordWorkspaceSnapshot)
+            const performer = findWorkspacePerformer(snapshot, entityId)
+            if (!performer) {
+                await interaction.editReply('Performer not found in the saved workspace.')
+                return
+            }
+            const sessionId = await ensureStandaloneSession({
+                workingDir: snapshot.workingDir,
+                performer,
+            })
+            const channel = await this.ensurePerformerThreadChannel(workspaceId, snapshot, performer.id, sessionId)
+            await interaction.editReply(`Created ${channel}.`)
+            return
+        }
+        if (kind === 'new-act-thread' && workspaceId && entityId) {
+            await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+            const saved = await getSavedWorkspace(workspaceId)
+            if (!saved.ok) {
+                await interaction.editReply(saved.error)
+                return
+            }
+            const snapshot = workspaceSnapshotFromSaved(saved.workspace as SavedDiscordWorkspaceSnapshot)
+            const act = findWorkspaceAct(snapshot, entityId)
+            if (!act) {
+                await interaction.editReply('Act not found in the saved workspace.')
+                return
+            }
+            const result = await createActThreadForDiscord(snapshot.workingDir, act, snapshot)
+            const channel = await this.ensureActThreadChannel(workspaceId, snapshot, act, result.thread.id)
+            await interaction.editReply(`Created ${channel}.`)
+        }
+    }
+
+    private async showQuestionAnswerModal(interaction: ButtonInteraction, pendingId: string) {
+        const pending = await this.requirePendingInteraction(pendingId, interaction)
+        if (pending.kind !== 'question') {
+            await interaction.reply({ content: 'That prompt is not a question.', flags: MessageFlags.Ephemeral })
+            return
+        }
+        const request = pending.request as unknown as QuestionRequest
+        const questions = (request.questions || []).slice(0, 5)
+        if (questions.length === 0) {
+            await interaction.reply({ content: 'That question request has no questions to answer.', flags: MessageFlags.Ephemeral })
+            return
+        }
+
+        const modal = new ModalBuilder()
+            .setCustomId(`dot:q-submit:${pendingId}`)
+            .setTitle('Answer Studio Question')
+        questions.forEach((question, index) => {
+            const placeholderParts = [
+                question.options?.length ? `Options: ${question.options.slice(0, 5).map((option) => option.label).join(', ')}` : '',
+                question.multiple ? 'Multiple answers: separate with commas.' : '',
+            ].filter(Boolean)
+            modal.addComponents(
+                new ActionRowBuilder<TextInputBuilder>().addComponents(
+                    new TextInputBuilder()
+                        .setCustomId(`answer_${index}`)
+                        .setLabel(truncateDiscordText(question.header || `Question ${index + 1}`, 45))
+                        .setPlaceholder(truncateDiscordText(placeholderParts.join(' '), 100) || 'Type your answer')
+                        .setStyle(TextInputStyle.Paragraph)
+                        .setRequired(true),
+                ),
+            )
+        })
+        await interaction.showModal(modal)
+    }
+
+    private async submitQuestionAnswers(
+        interaction: StringSelectMenuInteraction | ModalSubmitInteraction,
+        pendingId: string,
+        answers: QuestionAnswer[],
+    ) {
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        const pending = await this.requirePendingInteraction(pendingId, interaction)
+        if (pending.kind !== 'question') {
+            await interaction.editReply('That prompt is not a question.')
+            return
+        }
+        const request = pending.request as unknown as QuestionRequest
+        const questionId = typeof request.id === 'string' ? request.id : ''
+        if (!questionId) {
+            await interaction.editReply('That question request is missing its id.')
+            return
+        }
+        const afterMessageId = await getLatestDiscordAssistantMessageId(pending.workingDir, pending.sessionId).catch(() => null)
+        await respondDiscordQuestion(questionId, answers)
+        await this.clearPendingInteraction(pendingId)
+        await interaction.editReply('Answer submitted.')
+        if (interaction.channel?.isTextBased() && interaction.channel instanceof TextChannel) {
+            const stopTyping = this.startTypingIndicator(interaction.channel)
+            try {
+                const reply = await waitForAssistantReply(pending.workingDir, pending.sessionId, {
+                    afterMessageId,
+                    ignorePendingRequestId: questionId,
+                })
+                await this.postPendingContinuation(interaction.channel, pending, pending.sessionId, reply)
+            } finally {
+                stopTyping()
+            }
+        }
+    }
+
+    private async requirePendingInteraction(id: string, interaction: Interaction<CacheType>) {
+        const mappings = await readDiscordMappings()
+        const pending = mappings.pendingInteractions?.[id]
+        if (!pending) {
+            throw new Error('That Studio prompt is no longer pending.')
+        }
+        if (pending.channelId !== interaction.channelId) {
+            throw new Error('That Studio prompt belongs to another Discord channel.')
+        }
+        return pending
+    }
+
+    private async handlePermissionButton(interaction: ButtonInteraction) {
+        const [, , pendingId, response] = interaction.customId.split(':') as Array<string>
+        if (response !== 'once' && response !== 'always' && response !== 'reject') {
+            await interaction.reply({ content: 'Unknown permission response.', flags: MessageFlags.Ephemeral })
+            return
+        }
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        const pending = await this.requirePendingInteraction(pendingId, interaction)
+        if (pending.kind !== 'permission') {
+            await interaction.editReply('That prompt is not a permission request.')
+            return
+        }
+        const permissionId = typeof pending.request.id === 'string' ? pending.request.id : ''
+        if (!permissionId) {
+            await interaction.editReply('That permission request is missing its id.')
+            return
+        }
+        const afterMessageId = await getLatestDiscordAssistantMessageId(pending.workingDir, pending.sessionId).catch(() => null)
+        await respondDiscordPermission({
+            workingDir: pending.workingDir,
+            sessionId: pending.sessionId,
+            permissionId,
+            response,
+        })
+        await this.clearPendingInteraction(pendingId)
+        await interaction.editReply(response === 'reject' ? 'Permission denied.' : `Permission allowed ${response === 'always' ? 'always' : 'once'}.`)
+        if (response !== 'reject' && interaction.channel?.isTextBased() && interaction.channel instanceof TextChannel) {
+            const stopTyping = this.startTypingIndicator(interaction.channel)
+            try {
+                const reply = await waitForAssistantReply(pending.workingDir, pending.sessionId, {
+                    afterMessageId,
+                    ignorePendingRequestId: permissionId,
+                })
+                await this.postPendingContinuation(interaction.channel, pending, pending.sessionId, reply)
+            } finally {
+                stopTyping()
+            }
+        }
+    }
+
+    private async postPendingContinuation(
+        channel: TextChannel,
+        pending: { workspaceId: string; workingDir: string; channelId: string },
+        sessionId: string,
+        reply: DiscordAssistantReply,
+    ) {
+        const target = (await readDiscordMappings()).channels[pending.channelId]
+        if (reply.kind === 'message' && target?.kind === 'act-thread') {
+            const snapshot = await this.loadSnapshotForTarget(target)
+            const act = findWorkspaceAct(snapshot, target.actId)
+            if (!act) {
+                await this.postAssistantReplyToChannel(channel, pending, sessionId, reply)
+                return
+            }
+            const threads = await listActThreadsForDiscord(target.workingDir, target.actId).catch(() => ({ threads: [] }))
+            const thread = threads.threads.find((entry) => entry.id === target.threadId)
+            if (!thread) {
+                await this.postAssistantReplyToChannel(channel, pending, sessionId, reply)
+                return
+            }
+            void this.syncActThreadUntilIdle({
+                channel,
+                target,
+                act,
+                thread,
+                limitPerParticipant: 20,
+            }).catch((error) => {
+                console.error('[discord] Act thread sync after pending continuation failed:', error)
+            })
+            return
+        }
+        await this.postAssistantReplyToChannel(channel, pending, sessionId, reply)
+    }
+
+    private async handleQuestionAnswerButton(interaction: ButtonInteraction) {
+        const [, , pendingId] = interaction.customId.split(':')
+        const pending = await this.requirePendingInteraction(pendingId, interaction)
+        if (pending.kind !== 'question') {
+            await interaction.reply({ content: 'That prompt is not a question.', flags: MessageFlags.Ephemeral })
+            return
+        }
+        const request = pending.request as unknown as QuestionRequest
+        const questions = (request.questions || []).slice(0, 5)
+        if (questions.length === 0) {
+            await interaction.reply({ content: 'That question request has no questions to answer.', flags: MessageFlags.Ephemeral })
+            return
+        }
+
+        const question = questions[0]
+        const options = (question.options || []).slice(0, 25)
+        if (questions.length === 1 && options.length > 0) {
+            const rows: Array<ActionRowBuilder<StringSelectMenuBuilder | ButtonBuilder>> = [
+                new ActionRowBuilder<StringSelectMenuBuilder>().addComponents(
+                    new StringSelectMenuBuilder()
+                        .setCustomId(`dot:q-select:${pendingId}`)
+                        .setPlaceholder(question.multiple ? 'Choose one or more options' : 'Choose an option')
+                        .setMinValues(1)
+                        .setMaxValues(question.multiple ? options.length : 1)
+                        .addOptions(options.map((option, index) => ({
+                            label: truncateDiscordText(option.label || `Option ${index + 1}`, 100),
+                            value: String(index),
+                            ...(option.description ? { description: truncateDiscordText(option.description, 100) } : {}),
+                        }))),
+                ),
+            ]
+            const buttons = new ActionRowBuilder<ButtonBuilder>().addComponents(
+                new ButtonBuilder().setCustomId(`dot:q-reject:${pendingId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+            )
+            if (question.custom !== false) {
+                buttons.addComponents(
+                    new ButtonBuilder().setCustomId(`dot:q-custom:${pendingId}`).setLabel('Other').setStyle(ButtonStyle.Primary),
+                )
+            }
+            rows.push(buttons)
+            await interaction.reply({
+                content: formatQuestionPrompt(request),
+                components: rows.slice(0, 5),
+                flags: MessageFlags.Ephemeral,
+                allowedMentions: { parse: [] },
+            })
+            return
+        }
+
+        await this.showQuestionAnswerModal(interaction, pendingId)
+    }
+
+    private async handleQuestionCustomButton(interaction: ButtonInteraction) {
+        const [, , pendingId] = interaction.customId.split(':')
+        await this.showQuestionAnswerModal(interaction, pendingId)
+    }
+
+    private async handleQuestionSelect(interaction: StringSelectMenuInteraction, pendingId: string) {
+        const pending = await this.requirePendingInteraction(pendingId, interaction)
+        if (pending.kind !== 'question') {
+            await interaction.reply({ content: 'That prompt is not a question.', flags: MessageFlags.Ephemeral })
+            return
+        }
+        const request = pending.request as unknown as QuestionRequest
+        const question = request.questions?.[0]
+        if (!question?.options?.length) {
+            await interaction.reply({ content: 'That question no longer has selectable options.', flags: MessageFlags.Ephemeral })
+            return
+        }
+        const selected = interaction.values
+            .map((value) => {
+                const index = Number(value)
+                return Number.isInteger(index) ? question.options?.[index]?.label : null
+            })
+            .filter((value): value is string => !!value)
+        if (selected.length === 0) {
+            await interaction.reply({ content: 'Choose at least one option, or use Other.', flags: MessageFlags.Ephemeral })
+            return
+        }
+        await this.submitQuestionAnswers(interaction, pendingId, [selected])
+    }
+
+    private async handleQuestionRejectButton(interaction: ButtonInteraction) {
+        const [, , pendingId] = interaction.customId.split(':')
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral })
+        const pending = await this.requirePendingInteraction(pendingId, interaction)
+        if (pending.kind !== 'question') {
+            await interaction.editReply('That prompt is not a question.')
+            return
+        }
+        const questionId = typeof pending.request.id === 'string' ? pending.request.id : ''
+        if (!questionId) {
+            await interaction.editReply('That question request is missing its id.')
+            return
+        }
+        await rejectDiscordQuestion(questionId)
+        await this.clearPendingInteraction(pendingId)
+        await interaction.editReply('Question cancelled.')
+    }
+
+    private async handleModalSubmit(interaction: ModalSubmitInteraction) {
+        const [prefix, kind, pendingId] = interaction.customId.split(':')
+        if (prefix !== 'dot') {
+            return
+        }
+        if (kind !== 'q-submit' || !pendingId) {
+            return
+        }
+        const pending = await this.requirePendingInteraction(pendingId, interaction)
+        if (pending.kind !== 'question') {
+            await interaction.reply({ content: 'That prompt is not a question.', flags: MessageFlags.Ephemeral })
+            return
+        }
+        const request = pending.request as unknown as QuestionRequest
+        const answers: QuestionAnswer[] = (request.questions || []).slice(0, 5).map((question, index) => {
+            const raw = interaction.fields.getTextInputValue(`answer_${index}`).trim()
+            if (question.multiple) {
+                return raw.split(',').map((value) => value.trim()).filter(Boolean)
+            }
+            return raw ? [raw] : []
+        })
+        await this.submitQuestionAnswers(interaction, pendingId, answers)
+    }
+
+    private async ensurePerformerThreadChannel(workspaceId: string, snapshot: DiscordWorkspaceSnapshot, performerId: string, sessionId: string) {
+        const config = await readDiscordConfig()
+        const guild = await this.requireGuild(config)
+        const performer = findWorkspacePerformer(snapshot, performerId)
+        if (!performer) {
+            throw new Error('Performer not found in the saved workspace.')
+        }
+        const mappings = await readDiscordMappings()
+        const workspaceMapping = getOrCreateWorkspaceMapping(mappings, workspaceId, snapshot.workingDir)
+        workspaceMapping.performerCategories ||= {}
+        workspaceMapping.performerThreadChannels ||= {}
+        const category = await this.ensureCategory(
+            guild,
+            workspaceMapping.performerCategories[performerId],
+            performerCategoryName(performer.name),
+        )
+        const categoryId = category.id
+        workspaceMapping.performerCategories[performerId] = categoryId
+        mappings.activeWorkspaceId = workspaceId
+        const threads = await listStandaloneThreadsForDiscord(snapshot.workingDir, performerId)
+        const thread = threads.find((entry) => entry.id === sessionId)
+        const mappingKey = performerThreadMappingKey(performerId, sessionId)
+        const channel = await this.ensureTextChannel(
+            guild,
+            workspaceMapping.performerThreadChannels[mappingKey],
+            threadChannelName(thread?.name, sessionId),
+            categoryId,
+            `Studio performer thread: ${performer.name}`,
+        )
+        workspaceMapping.performerThreadChannels[mappingKey] = channel.id
+        mappings.channels[channel.id] = {
+            kind: 'performer',
+            workspaceId,
+            workingDir: snapshot.workingDir,
+            performerId,
+            sessionId,
+        }
+        await updateDiscordMappings(() => mappings)
+        await this.backfillSessionHistory({
+            channel,
+            workspaceId,
+            workingDir: snapshot.workingDir,
+            sessionId,
+            assistantLabel: performer.name,
+        })
+        return channel
+    }
+
+    private async ensureActThreadChannel(workspaceId: string, snapshot: DiscordWorkspaceSnapshot, act: DiscordActSnapshot, threadId: string) {
+        const config = await readDiscordConfig()
+        const guild = await this.requireGuild(config)
+        const mappings = await readDiscordMappings()
+        const workspaceMapping = getOrCreateWorkspaceMapping(mappings, workspaceId, snapshot.workingDir)
+        workspaceMapping.actCategories ||= {}
+        const category = await this.ensureCategory(
+            guild,
+            workspaceMapping.actCategories[act.id],
+            actCategoryName(act.name),
+        )
+        const categoryId = category.id
+        workspaceMapping.actCategories[act.id] = categoryId
+        mappings.activeWorkspaceId = workspaceId
+        const threads = await listActThreadsForDiscord(snapshot.workingDir, act.id)
+        const thread = threads.threads.find((entry) => entry.id === threadId)
+        const channel = await this.ensureTextChannel(
+            guild,
+            workspaceMapping.actThreadChannels[actThreadMappingKey(act.id, threadId)],
+            threadChannelName(thread?.name, threadId),
+            categoryId,
+            `Studio Act thread: ${act.name}`,
+        )
+        workspaceMapping.actThreadChannels[actThreadMappingKey(act.id, threadId)] = channel.id
+        const existingTarget = mappings.channels[channel.id]
+        mappings.channels[channel.id] = {
+            kind: 'act-thread',
+            workspaceId,
+            workingDir: snapshot.workingDir,
+            actId: act.id,
+            threadId,
+            sessionIds: existingTarget?.kind === 'act-thread'
+                ? existingTarget.sessionIds
+                : {},
+        }
+        await updateDiscordMappings(() => mappings)
+        if (thread?.participantSessions) {
+            let remaining = 20
+            for (const [participantKey, sessionId] of Object.entries(thread.participantSessions)) {
+                if (!sessionId || remaining <= 0) continue
+                const count = await this.backfillSessionHistory({
+                    channel,
+                    workspaceId,
+                    workingDir: snapshot.workingDir,
+                    sessionId,
+                    assistantLabel: participantDisplayName(act, participantKey),
+                    limit: remaining,
+                    includeUserMessages: false,
+                })
+                remaining -= count
+            }
+            void this.syncActThreadUntilIdle({
+                channel,
+                target: mappings.channels[channel.id] as Extract<DiscordChannelTarget, { kind: 'act-thread' }>,
+                act,
+                thread,
+                limitPerParticipant: 20,
+            }).catch((error) => {
+                console.error('[discord] Act thread sync after channel open failed:', error)
+            })
+        }
+        return channel
+    }
+
+    private async refreshPerformerThreadChannelName(
+        channel: TextChannel,
+        target: Extract<DiscordChannelTarget, { kind: 'performer' }>,
+        sessionId: string,
+    ) {
+        const threads = await listStandaloneThreadsForDiscord(target.workingDir, target.performerId).catch(() => [])
+        const thread = threads.find((entry) => entry.id === sessionId)
+        const nextName = threadChannelName(thread?.name, sessionId)
+        if (nextName && channel.name !== nextName) {
+            await channel.setName(nextName).catch(() => {})
+        }
+    }
+
+    private async refreshActThreadChannelName(
+        channel: TextChannel,
+        target: Extract<DiscordChannelTarget, { kind: 'act-thread' }>,
+    ) {
+        const threads = await listActThreadsForDiscord(target.workingDir, target.actId).catch(() => ({ threads: [] }))
+        const thread = threads.threads.find((entry) => entry.id === target.threadId)
+        const nextName = threadChannelName(thread?.name, target.threadId)
+        if (nextName && channel.name !== nextName) {
+            await channel.setName(nextName).catch(() => {})
+        }
+    }
+
+    private scheduleThreadChannelNameRefresh(
+        channel: TextChannel,
+        target: Extract<DiscordChannelTarget, { kind: 'performer' | 'act-thread' }>,
+        sessionId?: string,
+    ) {
+        setTimeout(() => {
+            if (target.kind === 'performer' && sessionId) {
+                void this.refreshPerformerThreadChannelName(channel, target, sessionId)
+                return
+            }
+            if (target.kind === 'act-thread') {
+                void this.refreshActThreadChannelName(channel, target)
+            }
+        }, 12_000).unref?.()
+    }
+
+    private startTypingIndicator(channel: TextChannel | null | undefined) {
+        if (!channel) {
+            return () => {}
+        }
+        const sendTyping = () => {
+            void channel.sendTyping().catch(() => {})
+        }
+        sendTyping()
+        const timer = setInterval(sendTyping, 8_000)
+        timer.unref?.()
+        return () => clearInterval(timer)
+    }
+
+    private beginDiscordSessionTurn(sessionId: string) {
+        if (this.activeDiscordSessionTurns.has(sessionId)) {
+            return false
+        }
+        this.activeDiscordSessionTurns.add(sessionId)
+        return true
+    }
+
+    private endDiscordSessionTurn(sessionId: string) {
+        this.activeDiscordSessionTurns.delete(sessionId)
+    }
+
+    private async replyIfSessionBlocked(message: Message, workingDir: string, sessionId: string) {
+        if (this.activeDiscordSessionTurns.has(sessionId)) {
+            await message.reply({
+                content: 'This Studio thread is already handling a Discord message. Wait for the current reply to finish before sending another one.',
+                allowedMentions: { parse: [] },
+            })
+            return true
+        }
+        const block = await describeDiscordSessionBlock(workingDir, sessionId)
+        if (block.blocked) {
+            await message.reply({
+                content: block.message || 'This Studio thread is not ready for another message yet.',
+                allowedMentions: { parse: [] },
+            })
+            return true
+        }
+        return false
+    }
+
+    private async isActThreadRunning(
+        target: Extract<DiscordChannelTarget, { kind: 'act-thread' }>,
+        thread: {
+            participantSessions?: Record<string, string>
+            participantStatuses?: Record<string, { type?: string }>
+        },
+        options: {
+            ignoreActiveTurnSessionIds?: Set<string>
+            ignoreDiscordTurnLocks?: boolean
+        } = {},
+    ) {
+        for (const status of Object.values(thread.participantStatuses || {})) {
+            if (status?.type === 'busy' || status?.type === 'retry') {
+                return true
+            }
+        }
+        for (const sessionId of Object.values(thread.participantSessions || {})) {
+            if (!sessionId) continue
+            if (!options.ignoreDiscordTurnLocks && !options.ignoreActiveTurnSessionIds?.has(sessionId) && this.activeDiscordSessionTurns.has(sessionId)) {
+                return true
+            }
+            if (await isDiscordSessionRunning(target.workingDir, sessionId)) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private async syncActThreadParticipantHistory(params: {
+        channel: TextChannel
+        target: Extract<DiscordChannelTarget, { kind: 'act-thread' }>
+        act: DiscordActSnapshot
+        thread: { participantSessions?: Record<string, string> }
+        limitPerParticipant?: number
+        ignoreActiveTurnSessionIds?: string[]
+    }) {
+        let total = 0
+        const sessionEntries = {
+            ...(params.thread.participantSessions || {}),
+            ...(params.target.sessionIds || {}),
+        }
+        for (const [participantKey, sessionId] of Object.entries(sessionEntries)) {
+            if (!sessionId) continue
+            total += await this.backfillSessionHistory({
+                channel: params.channel,
+                workspaceId: params.target.workspaceId,
+                workingDir: params.target.workingDir,
+                sessionId,
+                assistantLabel: participantDisplayName(params.act, participantKey),
+                limit: params.limitPerParticipant || 20,
+                announce: false,
+                includeUserMessages: false,
+            })
+        }
+        return total
+    }
+
+    private async syncActThreadUntilIdle(params: {
+        channel: TextChannel
+        target: Extract<DiscordChannelTarget, { kind: 'act-thread' }>
+        act: DiscordActSnapshot
+        thread: { participantSessions?: Record<string, string> }
+        limitPerParticipant?: number
+        ignoreActiveTurnSessionIds?: string[]
+    }) {
+        const key = `${params.channel.id}:${params.target.workspaceId}:${params.target.actId}:${params.target.threadId}`
+        const active = this.activeActThreadSyncs.get(key)
+        if (active) {
+            active.expiresAt = Date.now() + ACT_THREAD_SYNC_TIMEOUT_MS
+            return active.promise
+        }
+        const run = this.runActThreadSyncUntilIdle(params)
+            .finally(() => {
+                if (this.activeActThreadSyncs.get(key)?.promise === run) {
+                    this.activeActThreadSyncs.delete(key)
+                }
+            })
+        this.activeActThreadSyncs.set(key, {
+            promise: run,
+            expiresAt: Date.now() + ACT_THREAD_SYNC_TIMEOUT_MS,
+        })
+        return run
+    }
+
+    private async runActThreadSyncUntilIdle(params: {
+        channel: TextChannel
+        target: Extract<DiscordChannelTarget, { kind: 'act-thread' }>
+        act: DiscordActSnapshot
+        thread: { participantSessions?: Record<string, string> }
+        limitPerParticipant?: number
+        ignoreActiveTurnSessionIds?: string[]
+    }) {
+        const key = `${params.channel.id}:${params.target.workspaceId}:${params.target.actId}:${params.target.threadId}`
+        let total = 0
+        let idleConfirmations = 0
+        let thread = params.thread
+        while (Date.now() < (this.activeActThreadSyncs.get(key)?.expiresAt || 0)) {
+            const latestThreads = await listActThreadsForDiscord(params.target.workingDir, params.target.actId).catch(() => ({ threads: [] }))
+            thread = latestThreads.threads.find((entry) => entry.id === params.target.threadId) || thread
+
+            const synced = await this.syncActThreadParticipantHistory({
+                channel: params.channel,
+                target: params.target,
+                act: params.act,
+                thread,
+                limitPerParticipant: params.limitPerParticipant || 20,
+            })
+            total += synced
+            await this.refreshActThreadChannelName(params.channel, params.target)
+
+            const running = await this.isActThreadRunning(params.target, thread, {
+                ignoreActiveTurnSessionIds: new Set(params.ignoreActiveTurnSessionIds || []),
+                ignoreDiscordTurnLocks: true,
+            })
+            if (running) {
+                idleConfirmations = 0
+                await params.channel.sendTyping().catch(() => {})
+            } else if (synced > 0) {
+                idleConfirmations = 0
+                const active = this.activeActThreadSyncs.get(key)
+                if (active) {
+                    active.expiresAt = Date.now() + ACT_THREAD_SYNC_TIMEOUT_MS
+                }
+            } else {
+                idleConfirmations += 1
+                if (idleConfirmations >= ACT_THREAD_IDLE_CONFIRMATIONS) {
+                    break
+                }
+            }
+
+            await sleep(ACT_THREAD_SYNC_POLL_MS)
+        }
+
+        await sleep(1_000)
+        const latestThreads = await listActThreadsForDiscord(params.target.workingDir, params.target.actId).catch(() => ({ threads: [] }))
+        thread = latestThreads.threads.find((entry) => entry.id === params.target.threadId) || thread
+        total += await this.syncActThreadParticipantHistory({
+            channel: params.channel,
+            target: params.target,
+            act: params.act,
+            thread,
+            limitPerParticipant: params.limitPerParticipant || 20,
+        })
+        await this.refreshActThreadChannelName(params.channel, params.target)
+        return total
+    }
+
+    private async handleMessage(message: Message) {
+        if (message.author.bot || !message.guildId) {
+            return
+        }
+        if (!(await this.authorizeMessage(message))) {
+            await message.reply({
+                content: 'You are not authorized to use this Studio Discord integration.',
+                allowedMentions: { parse: [] },
+            }).catch(() => {})
+            return
+        }
+        const mappings = await readDiscordMappings()
+        const target = mappings.channels[message.channelId]
+        if (!target || target.kind === 'menu') {
+            return
+        }
+        const content = message.content.trim()
+        if (!content) {
+            this.messageContentLikelyMissing = true
+            await message.reply({
+                content: 'I received the message event, but Discord did not include message content. Enable the Message Content privileged intent for this bot.',
+                allowedMentions: { parse: [] },
+            })
+            return
+        }
+        if (content.length > MAX_DISCORD_PROMPT_CHARS) {
+            await message.reply({
+                content: `Discord Studio prompts are limited to ${MAX_DISCORD_PROMPT_CHARS} characters.`,
+                allowedMentions: { parse: [] },
+            })
+            return
+        }
+
+        if (target.kind === 'performer') {
+            await this.handlePerformerMessage(message, target, content)
+            return
+        }
+        await this.handleActThreadMessage(message, target)
+    }
+
+    private async loadSnapshotForTarget(target: DiscordChannelTarget) {
+        const saved = Object.entries((await readDiscordMappings()).workspaces)
+            .find(([workspaceId]) => workspaceId === target.workspaceId)
+        if (!saved) {
+            throw new Error('Workspace mapping not found.')
+        }
+        const workspace = await getSavedWorkspace(target.workspaceId)
+        if (!workspace.ok) {
+            throw new Error(workspace.error)
+        }
+        return workspaceSnapshotFromSaved(workspace.workspace as SavedDiscordWorkspaceSnapshot)
+    }
+
+    private async handlePerformerMessage(message: Message, target: Extract<DiscordChannelTarget, { kind: 'performer' }>, content: string) {
+        const snapshot = await this.loadSnapshotForTarget(target)
+        const performer = findWorkspacePerformer(snapshot, target.performerId)
+        if (!performer) {
+            await message.reply({ content: 'That performer is no longer present in the saved Studio workspace.', allowedMentions: { parse: [] } })
+            return
+        }
+        if (!performer.model) {
+            await message.reply({ content: `Configure a model for "${performer.name}" in Studio before chatting from Discord.`, allowedMentions: { parse: [] } })
+            return
+        }
+
+        const sessionId = await ensureStandaloneSession({
+            workingDir: target.workingDir,
+            performer,
+            sessionId: target.sessionId,
+        })
+        if (await this.replyIfSessionBlocked(message, target.workingDir, sessionId)) {
+            return
+        }
+        if (!this.beginDiscordSessionTurn(sessionId)) {
+            await this.replyIfSessionBlocked(message, target.workingDir, sessionId)
+            return
+        }
+        const stopTyping = this.startTypingIndicator(message.channel instanceof TextChannel ? message.channel : null)
+        try {
+            const afterMessageId = await getLatestDiscordAssistantMessageId(target.workingDir, sessionId).catch(() => null)
+            await updateDiscordMappings((mappings) => {
+                const current = mappings.channels[message.channelId]
+                if (current?.kind === 'performer') {
+                    current.sessionId = sessionId
+                }
+            })
+            await sendPerformerDiscordMessage({
+                workingDir: target.workingDir,
+                sessionId,
+                performer,
+                message: content,
+            })
+            if (message.channel instanceof TextChannel) {
+                await this.refreshPerformerThreadChannelName(message.channel, target, sessionId)
+                this.scheduleThreadChannelNameRefresh(message.channel, target, sessionId)
+            }
+            const reply = await waitForAssistantReply(target.workingDir, sessionId, { afterMessageId })
+            await this.postAssistantReply(message, target, sessionId, reply)
+            if (message.channel instanceof TextChannel) {
+                await this.refreshPerformerThreadChannelName(message.channel, target, sessionId)
+            }
+        } finally {
+            stopTyping()
+            this.endDiscordSessionTurn(sessionId)
+        }
+    }
+
+    private async handleActThreadMessage(message: Message, _target: Extract<DiscordChannelTarget, { kind: 'act-thread' }>) {
+        await message.reply({
+            content: 'Use `/act message` in this Act thread to choose a participant and send a message. Direct Act chat messages are not routed.',
+            allowedMentions: { parse: [] },
+        })
+    }
+
+    private async sendActParticipantInput(params: {
+        channel: TextChannel
+        target: Extract<DiscordChannelTarget, { kind: 'act-thread' }>
+        participantKey: string
+        content: string
+    }) {
+        const snapshot = await this.loadSnapshotForTarget(params.target)
+        const act = findWorkspaceAct(snapshot, params.target.actId)
+        if (!act) {
+            return 'That Act is no longer present in the saved Studio workspace.'
+        }
+        const threads = await listActThreadsForDiscord(params.target.workingDir, params.target.actId)
+        const thread = threads.threads.find((entry) => entry.id === params.target.threadId)
+        if (!thread) {
+            return 'That Act thread is no longer available.'
+        }
+        for (const [runningParticipantKey, runningSessionId] of Object.entries(thread.participantSessions || {})) {
+            if (!runningSessionId) continue
+            if (this.activeDiscordSessionTurns.has(runningSessionId)) {
+                return `This Act thread is already handling a Discord message for ${participantDisplayName(act, runningParticipantKey)}. Wait for the current turn to finish before sending another message.`
+            }
+            const block = await describeDiscordSessionBlock(params.target.workingDir, runningSessionId)
+            if (block.blocked) {
+                const detail = block.reason === 'permission'
+                    ? 'waiting for a permission response'
+                    : block.reason === 'question'
+                        ? 'waiting for a question response'
+                        : 'still running'
+                return `This Act thread cannot accept new Discord messages because ${participantDisplayName(act, runningParticipantKey)} is ${detail}.`
+            }
+        }
+
+        const performer = resolveActParticipantPerformer(snapshot, act, params.participantKey)
+        if (!performer) {
+            return `Cannot resolve performer for participant "${participantDisplayName(act, params.participantKey)}".`
+        }
+        if (!performer.model) {
+            return `Configure a model for "${performer.name}" in Studio before chatting from Discord.`
+        }
+
+        const sessionId = await ensureActParticipantSession({
+            workingDir: params.target.workingDir,
+            actId: params.target.actId,
+            thread,
+            participantKey: params.participantKey,
+            performer,
+        })
+        const sessionBlock = await describeDiscordSessionBlock(params.target.workingDir, sessionId)
+        if (sessionBlock.blocked) {
+            return sessionBlock.message || 'This Studio thread is not ready for another message yet.'
+        }
+        if (!this.beginDiscordSessionTurn(sessionId)) {
+            return 'This Studio thread is already handling a Discord message. Wait for the current reply to finish before sending another one.'
+        }
+        const stopTyping = this.startTypingIndicator(params.channel)
+        try {
+            const afterMessageId = await getLatestDiscordAssistantMessageId(params.target.workingDir, sessionId).catch(() => null)
+            await updateDiscordMappings((mappings) => {
+                const current = mappings.channels[params.channel.id]
+                if (current?.kind === 'act-thread') {
+                    current.sessionIds ||= {}
+                    current.sessionIds[params.participantKey] = sessionId
+                }
+            })
+            await params.channel.send({
+                content: `**[Studio User -> ${participantDisplayName(act, params.participantKey)}]**\n${params.content}`,
+                allowedMentions: { parse: [] },
+            })
+            await sendActParticipantDiscordMessage({
+                workingDir: params.target.workingDir,
+                sessionId,
+                actId: params.target.actId,
+                threadId: params.target.threadId,
+                participantKey: params.participantKey,
+                performer,
+                message: params.content,
+            })
+            await this.refreshActThreadChannelName(params.channel, params.target)
+            this.scheduleThreadChannelNameRefresh(params.channel, params.target)
+            const reply = await waitForAssistantReply(params.target.workingDir, sessionId, { afterMessageId })
+            if (reply.kind === 'message') {
+                const latestThreads = await listActThreadsForDiscord(params.target.workingDir, params.target.actId).catch(() => threads)
+                const latestThread = latestThreads.threads.find((entry) => entry.id === params.target.threadId) || thread
+                void this.syncActThreadUntilIdle({
+                    channel: params.channel,
+                    target: params.target,
+                    act,
+                    thread: latestThread,
+                    limitPerParticipant: 20,
+                    ignoreActiveTurnSessionIds: [sessionId],
+                }).catch((error) => {
+                    console.error('[discord] Act thread sync after message failed:', error)
+                })
+            } else {
+                await this.postAssistantReplyToChannel(params.channel, {
+                    workspaceId: params.target.workspaceId,
+                    workingDir: params.target.workingDir,
+                    channelId: params.channel.id,
+                }, sessionId, reply)
+                await this.refreshActThreadChannelName(params.channel, params.target)
+            }
+            return `Sent to ${participantDisplayName(act, params.participantKey)}.`
+        } finally {
+            stopTyping()
+            this.endDiscordSessionTurn(sessionId)
+        }
+    }
+}
+
+export const discordIntegrationService = new DiscordIntegrationService()

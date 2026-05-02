@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { RefreshCw, Settings, X, Sliders, Server, LayoutGrid } from 'lucide-react'
+import { RefreshCw, Settings, X, Sliders, Server, LayoutGrid, MessageCircle } from 'lucide-react'
 import { api } from '../../api'
 import { useStudioStore } from '../../store'
 import { queryKeys } from '../../hooks/queries'
@@ -13,8 +13,9 @@ import { buildProviderCards } from './settings-utils'
 import SettingsGeneral from './SettingsGeneral'
 import SettingsProviders from './SettingsProviders'
 import SettingsModels from './SettingsModels'
+import SettingsDiscord from './SettingsDiscord'
 
-type SettingsTab = 'general' | 'providers' | 'models'
+type SettingsTab = 'general' | 'providers' | 'models' | 'discord'
 
 interface SidebarSection {
     label: string
@@ -35,16 +36,22 @@ const SECTIONS: SidebarSection[] = [
             { key: 'models', label: 'Models', icon: <LayoutGrid size={14} /> },
         ],
     },
+    {
+        label: 'Integrations',
+        items: [
+            { key: 'discord', label: 'Discord', icon: <MessageCircle size={14} /> },
+        ],
+    },
 ]
 
-export default function SettingsModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+export default function SettingsModal({ open, onClose, initialTab = 'general' }: { open: boolean; onClose: () => void; initialTab?: SettingsTab }) {
     const queryClient = useQueryClient()
     const workingDir = useStudioStore((state) => state.workingDir)
 
     const [providers, setProviders] = useState<ProviderCard[]>([])
     const [loading, setLoading] = useState(true)
     const [error, setError] = useState<string | null>(null)
-    const [activeTab, setActiveTab] = useState<SettingsTab>('general')
+    const [activeTab, setActiveTab] = useState<SettingsTab>(initialTab)
     const [statusMessage, setStatusMessage] = useState<string | null>(null)
     const [refreshToken, setRefreshToken] = useState(0)
     const providersRef = useRef<ProviderCard[]>([])
@@ -124,8 +131,9 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
     useEffect(() => {
         if (!open) return
 
+        setActiveTab(initialTab)
         void refreshSettings()
-    }, [open, refreshSettings, workingDir])
+    }, [initialTab, open, refreshSettings, workingDir])
 
     if (!open) return null
 
@@ -157,6 +165,9 @@ export default function SettingsModal({ open, onClose }: { open: boolean; onClos
 
             case 'models':
                 return <SettingsModels key={`models-${refreshToken}`} />
+
+            case 'discord':
+                return <SettingsDiscord />
         }
     }
 
