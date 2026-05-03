@@ -28,7 +28,9 @@ import {
 } from 'discord.js'
 import { randomUUID } from 'crypto'
 import type { QuestionAnswer, PermissionRequest, QuestionRequest } from '@opencode-ai/sdk/v2'
+import type { ActThreadSummary } from '../../../shared/act-types.js'
 import { listSavedWorkspaces, getSavedWorkspace } from '../workspace-service.js'
+import { subscribeActRuntimeEvents } from '../act-runtime/act-runtime-events.js'
 import {
     getOrCreateWorkspaceMapping,
     readDiscordConfig,
@@ -115,9 +117,9 @@ const REQUIRED_PERMISSIONS = [
     ['Read message history', PermissionFlagsBits.ReadMessageHistory],
 ] as const
 const MAX_DISCORD_PROMPT_CHARS = 1800
-const ACT_THREAD_SYNC_POLL_MS = 3_000
+const ACT_THREAD_SYNC_POLL_MS = 1_500
 const ACT_THREAD_SYNC_TIMEOUT_MS = 30 * 60_000
-const ACT_THREAD_IDLE_CONFIRMATIONS = 40
+const ACT_THREAD_IDLE_CONFIRMATIONS = 80
 
 function discordInviteUrl(applicationId: string) {
     const permissions = new PermissionsBitField([
@@ -209,6 +211,7 @@ class DiscordIntegrationService {
     private messageContentLikelyMissing = false
     private activeDiscordSessionTurns = new Set<string>()
     private activeActThreadSyncs = new Map<string, { promise: Promise<number>; expiresAt: number }>()
+    private actRuntimeUnsubscribers = new Map<string, () => void>()
 
     async initialize() {
         const config = await readDiscordConfig()
@@ -287,6 +290,7 @@ class DiscordIntegrationService {
             throw new Error(`${saved.error} (${workspaceId})`)
         }
         const snapshot = workspaceSnapshotFromSaved(saved.workspace as SavedDiscordWorkspaceSnapshot)
+        this.ensureActRuntimeSubscription(snapshot.workingDir)
 
         let result: Awaited<ReturnType<typeof updateDiscordMappings>>
         try {
@@ -472,6 +476,7 @@ class DiscordIntegrationService {
                 await ready
             }
             await this.registerCommands()
+            await this.subscribeMappedActRuntimes()
         })()
 
         try {
@@ -482,6 +487,11 @@ class DiscordIntegrationService {
     }
 
     private async stop() {
+        for (const unsubscribe of this.actRuntimeUnsubscribers.values()) {
+            unsubscribe()
+        }
+        this.actRuntimeUnsubscribers.clear()
+        this.activeActThreadSyncs.clear()
         if (this.client) {
             this.client.destroy()
             this.client = null
@@ -489,6 +499,72 @@ class DiscordIntegrationService {
         this.startPromise = null
         this.lastError = undefined
         this.messageContentLikelyMissing = false
+    }
+
+    private async subscribeMappedActRuntimes() {
+        const mappings = await readDiscordMappings().catch(() => null)
+        if (!mappings) {
+            return
+        }
+        for (const workspace of Object.values(mappings.workspaces || {})) {
+            if (workspace.workingDir) {
+                this.ensureActRuntimeSubscription(workspace.workingDir)
+            }
+        }
+    }
+
+    private ensureActRuntimeSubscription(workingDir: string) {
+        if (!workingDir || this.actRuntimeUnsubscribers.has(workingDir)) {
+            return
+        }
+        const unsubscribe = subscribeActRuntimeEvents(workingDir, (event) => {
+            if (event.type !== 'act.thread.updated') {
+                return
+            }
+            void this.handleActRuntimeThreadUpdated(workingDir, event.properties.thread).catch((error) => {
+                console.error('[discord] Act runtime update sync failed:', error)
+            })
+        })
+        this.actRuntimeUnsubscribers.set(workingDir, unsubscribe)
+    }
+
+    private async handleActRuntimeThreadUpdated(workingDir: string, thread: ActThreadSummary) {
+        const client = this.client
+        if (!client?.isReady()) {
+            return
+        }
+        const mappings = await readDiscordMappings()
+        const targets = Object.entries(mappings.channels).filter(([, target]) =>
+            target.kind === 'act-thread'
+            && target.workingDir === workingDir
+            && target.actId === thread.actId
+            && target.threadId === thread.id,
+        ) as Array<[string, Extract<DiscordChannelTarget, { kind: 'act-thread' }>]>
+
+        for (const [channelId, target] of targets) {
+            const channel = await client.channels.fetch(channelId).catch(() => null)
+            if (!(channel instanceof TextChannel)) {
+                continue
+            }
+            const snapshot = await this.loadSnapshotForTarget(target).catch(() => null)
+            const act = snapshot ? findWorkspaceAct(snapshot, target.actId) : null
+            if (!act) {
+                continue
+            }
+            const running = await this.isActThreadRunning(target, thread, { ignoreDiscordTurnLocks: true }).catch(() => false)
+            if (running) {
+                await channel.sendTyping().catch(() => {})
+            }
+            void this.syncActThreadUntilIdle({
+                channel,
+                target,
+                act,
+                thread,
+                limitPerParticipant: 20,
+            }).catch((error) => {
+                console.error('[discord] Act thread sync from runtime event failed:', error)
+            })
+        }
     }
 
     private async ensureReady() {
@@ -2350,6 +2426,10 @@ class DiscordIntegrationService {
                     current.sessionIds[params.participantKey] = sessionId
                 }
             })
+            params.target.sessionIds = {
+                ...(params.target.sessionIds || {}),
+                [params.participantKey]: sessionId,
+            }
             await params.channel.send({
                 content: `**[Studio User -> ${participantDisplayName(act, params.participantKey)}]**\n${params.content}`,
                 allowedMentions: { parse: [] },
@@ -2363,17 +2443,33 @@ class DiscordIntegrationService {
                 performer,
                 message: params.content,
             })
+            const latestThreadsAfterSend = await listActThreadsForDiscord(params.target.workingDir, params.target.actId).catch(() => threads)
+            const latestThreadAfterSend = latestThreadsAfterSend.threads.find((entry) => entry.id === params.target.threadId) || {
+                ...thread,
+                participantSessions: {
+                    ...(thread.participantSessions || {}),
+                    [params.participantKey]: sessionId,
+                },
+            }
+            void this.syncActThreadUntilIdle({
+                channel: params.channel,
+                target: params.target,
+                act,
+                thread: latestThreadAfterSend,
+                limitPerParticipant: 20,
+                ignoreActiveTurnSessionIds: [sessionId],
+            }).catch((error) => {
+                console.error('[discord] Act thread sync during message failed:', error)
+            })
             await this.refreshActThreadChannelName(params.channel, params.target)
             this.scheduleThreadChannelNameRefresh(params.channel, params.target)
             const reply = await waitForAssistantReply(params.target.workingDir, sessionId, { afterMessageId })
             if (reply.kind === 'message') {
-                const latestThreads = await listActThreadsForDiscord(params.target.workingDir, params.target.actId).catch(() => threads)
-                const latestThread = latestThreads.threads.find((entry) => entry.id === params.target.threadId) || thread
                 void this.syncActThreadUntilIdle({
                     channel: params.channel,
                     target: params.target,
                     act,
-                    thread: latestThread,
+                    thread: latestThreadAfterSend,
                     limitPerParticipant: 20,
                     ignoreActiveTurnSessionIds: [sessionId],
                 }).catch((error) => {

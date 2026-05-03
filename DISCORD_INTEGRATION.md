@@ -215,7 +215,7 @@ Use `/act message participant:<participant> message:<text>` inside the Act threa
 Standalone performer channels accept one active Studio turn at a time.
 Act channels reject new messages if any participant session in that Act thread is running, retrying, or waiting on a permission/question response.
 
-While Studio is working, Discord shows the bot typing indicator in the thread channel. In Act channels, Studio keeps a per-thread watcher active, checks every participant session plus Act participant runtime status, extends that watcher whenever new output appears or the thread is touched again, and waits for a stable-idle window before it stops syncing participant output.
+While Studio is working, Discord shows the bot typing indicator in the thread channel. In Act channels, Studio starts the per-thread watcher as soon as `/act message` is sent, also wakes it from Act runtime thread-update events, checks every participant session plus Act participant runtime status, extends that watcher whenever new output appears or the thread is touched again, and waits for a stable-idle window before it stops syncing participant output.
 
 ### Permissions And Questions
 

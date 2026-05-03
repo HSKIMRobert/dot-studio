@@ -96,7 +96,7 @@ When a session pauses for user input:
 - Discord stores only adapter metadata for pending prompt buttons in `discord-mappings.json`
 - after an allow or answer response, Discord waits for the same session to settle and ignores the just-resolved pending request id so stale OpenCode polling cannot repost the same prompt
 - Discord keeps the bot typing indicator active while it is waiting for Studio to produce a reply or a permission/question prompt
-- Act thread sync keeps one watcher per Discord Act thread, extends the watcher when the thread is touched again or new participant output is synced, refreshes the Act thread session list on every poll, emits typing while any participant session or Act participant runtime status is still busy or retrying, and waits for a stable-idle window before stopping
+- Act thread sync keeps one watcher per Discord Act thread, starts that watcher immediately after `/act message`, also wakes it from Act runtime thread-update events, extends the watcher when the thread is touched again or new participant output is synced, refreshes the Act thread session list on every poll, emits typing while any participant session or Act participant runtime status is still busy or retrying, and waits for a stable-idle window before stopping
 - Act thread input uses `/act message`; direct text messages in Act channels are not routed
 - Discord Act channels sync visible text from all participant sessions in that Act thread
 - Discord rejects additional Act chat if any participant session in that Act thread is running, retrying, or waiting on permission/question input
