@@ -220,3 +220,13 @@ This package is the Studio application itself.
 
 - `dot-studio` provides the local visual editor, server, and CLI
 - `dance-of-tal` provides DOT contracts, parsing, installation, publishing, and registry-facing behavior
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=readme%2Freadme%2Cdance-of-tal%2Fdot-studio&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=readme/readme%2Cdance-of-tal/dot-studio&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=readme/readme%2Cdance-of-tal/dot-studio&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=readme/readme%2Cdance-of-tal/dot-studio&type=date&legend=top-left" />
+ </picture>
+</a>
