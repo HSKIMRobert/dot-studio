@@ -9,6 +9,7 @@
   --bg-card: #ffffff;
   --bg-hover: #f0f0f0;
   --bg-selected: #e5f4ff;
+  --bg-elevated: #f8f8f8;
 
   --border-light: #f0f0f0;
   --border-main: #e5e5e5;
@@ -21,6 +22,10 @@
 
   --accent: #0d99ff;
   --accent-hover: #0a85e0;
+  --accent-color: var(--accent);
+  --accent-light: rgba(13, 153, 255, 0.24);
+  --accent-rgb: 13, 153, 255;
+  --text-on-accent: #ffffff;
 
   /* Studio Shadows */
   --shadow-window:
@@ -59,10 +64,16 @@
   /* Status Colors */
   --status-warning: #f59e0b;
   --status-warning-bg: rgba(245, 158, 11, 0.1);
+  --status-success: #14ae5c;
+  --status-success-bg: rgba(20, 174, 92, 0.1);
   --status-danger: #ef4444;
   --status-danger-bg: rgba(239, 68, 68, 0.1);
   --status-neutral: #6b7280;
   --status-neutral-dim: #9ca3af;
+  --danger: var(--status-danger);
+  --danger-bg: var(--status-danger-bg);
+  --color-diff-add: #22c55e;
+  --color-diff-del: var(--status-danger);
 
   /* Terminal */
   --terminal-bg: #f7f7f7;
@@ -71,7 +82,17 @@
 
   /* Derived token aliases */
   --bg-main: var(--bg-panel);
+  --bg-base: var(--bg-canvas);
+  --bg-default: var(--bg-canvas);
+  --bg-primary: var(--bg-panel);
+  --bg-secondary: var(--bg-hover);
+  --bg-surface: var(--bg-panel);
+  --border-subtle: var(--border-light);
+  --primary: var(--accent);
   --primary-rgb: 13, 153, 255;
+  --primary-foreground: var(--text-on-accent);
+  --radius-md: var(--radius);
+  --text-main: var(--text-primary);
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
   color-scheme: light;
@@ -84,11 +105,16 @@
   --bg-card: #383838;
   --bg-hover: #444444;
   --bg-selected: rgba(13, 153, 255, 0.15);
+  --bg-elevated: #383838;
 
   --border-light: #383838;
   --border-main: #444444;
   --border-strong: #555555;
   --border-active: #0d99ff;
+  --accent-color: var(--accent);
+  --accent-light: rgba(13, 153, 255, 0.28);
+  --accent-rgb: 13, 153, 255;
+  --text-on-accent: #ffffff;
 
   --text-primary: #ffffff;
   --text-secondary: #b3b3b3;
@@ -110,10 +136,16 @@
 
   --status-warning: #fbbf24;
   --status-warning-bg: rgba(251, 191, 36, 0.12);
+  --status-success: #22c55e;
+  --status-success-bg: rgba(34, 197, 94, 0.12);
   --status-danger: #f87171;
   --status-danger-bg: rgba(248, 113, 113, 0.12);
   --status-neutral: #9ca3af;
   --status-neutral-dim: #6b7280;
+  --danger: var(--status-danger);
+  --danger-bg: var(--status-danger-bg);
+  --color-diff-add: #22c55e;
+  --color-diff-del: var(--status-danger);
 
   /* Terminal */
   --terminal-bg: #1e1e1e;
@@ -122,7 +154,17 @@
 
   /* Derived token aliases */
   --bg-main: var(--bg-panel);
+  --bg-base: var(--bg-canvas);
+  --bg-default: var(--bg-canvas);
+  --bg-primary: var(--bg-panel);
+  --bg-secondary: var(--bg-hover);
+  --bg-surface: var(--bg-panel);
+  --border-subtle: var(--border-light);
+  --primary: var(--accent);
   --primary-rgb: 13, 153, 255;
+  --primary-foreground: var(--text-on-accent);
+  --radius-md: var(--radius);
+  --text-main: var(--text-primary);
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
   color-scheme: dark;

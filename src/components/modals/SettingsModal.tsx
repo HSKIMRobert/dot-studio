@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { RefreshCw, Settings, X, Sliders, Server, LayoutGrid, MessageCircle } from 'lucide-react'
 import { api } from '../../api'
@@ -171,7 +172,7 @@ export default function SettingsModal({ open, onClose, initialTab = 'general' }:
         }
     }
 
-    return (
+    return createPortal(
         <div className="settings-overlay" onClick={onClose}>
             <div className="settings-modal" onClick={(e) => e.stopPropagation()}>
                 <div className="settings-header">
@@ -212,15 +213,12 @@ export default function SettingsModal({ open, onClose, initialTab = 'general' }:
 
                     {/* Right content */}
                     <div className="stg-content">
-                        {error && (
-                            <div className="alert" style={{ color: '#f24822', background: 'rgba(242,72,34,0.1)', margin: '16px 24px 0' }}>
-                                {error}
-                            </div>
-                        )}
+                        {error && <div className="alert alert--danger settings-error-alert">{error}</div>}
                         {renderContent()}
                     </div>
                 </div>
             </div>
-        </div>
+        </div>,
+        document.body,
     )
 }

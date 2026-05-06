@@ -185,7 +185,7 @@
     padding: 4px 6px;
 }
 
-.github-import-input .btn-sm {
+.github-import-input .btn--sm {
     padding: 4px 8px;
     font-size: var(--font-xs);
     flex-shrink: 0;

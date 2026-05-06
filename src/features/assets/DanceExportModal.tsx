@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { ExternalLink, FolderOpen, Upload, X } from 'lucide-react'
 import { api } from '../../api'
 import { coerceStudioApiError, formatStudioApiErrorMessage } from '../../lib/api-errors'
@@ -92,7 +93,7 @@ export default function DanceExportModal({ open, draft, onClose }: Props) {
         }
     }
 
-    return (
+    return createPortal(
         <div className="dance-export-modal__backdrop" onClick={onClose}>
             <div className="dance-export-modal" onClick={(event) => event.stopPropagation()}>
                 <div className="dance-export-modal__header">
@@ -155,6 +156,7 @@ export default function DanceExportModal({ open, draft, onClose }: Props) {
                     ) : null}
                 </div>
             </div>
-        </div>
+        </div>,
+        document.body,
     )
 }

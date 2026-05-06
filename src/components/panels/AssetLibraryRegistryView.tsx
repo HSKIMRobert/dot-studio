@@ -188,7 +188,7 @@ function GitHubImportRow() {
                 />
                 <div style={{ position: 'relative' }}>
                     <button
-                        className="btn btn-sm"
+                        className="btn btn--sm"
                         onClick={() => setShowScope(!showScope)}
                         disabled={!source.trim() || addMutation.isPending}
                     >

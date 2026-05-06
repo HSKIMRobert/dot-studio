@@ -115,8 +115,6 @@
 }
 
 .alert--danger {
-    color: var(--danger, #f24822);
-    background: rgba(242, 72, 34, 0.1);
     margin-bottom: 16px;
 }
 

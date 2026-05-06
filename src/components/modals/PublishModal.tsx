@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom'
 import { X, Upload, Save, ChevronLeft } from 'lucide-react'
 import './PublishModal.css'
 import PublishPickerStep from './PublishPickerStep'
@@ -11,7 +12,7 @@ export default function PublishModal({ open, onClose }: { open: boolean; onClose
         return null
     }
 
-    return (
+    return createPortal(
         <div className="publish-modal__backdrop" onClick={onClose}>
             <div className="publish-modal" onClick={(event) => event.stopPropagation()}>
                 <div className="publish-modal__header">
@@ -80,6 +81,7 @@ export default function PublishModal({ open, onClose }: { open: boolean; onClose
                     </div>
                 ) : null}
             </div>
-        </div>
+        </div>,
+        document.body,
     )
 }

@@ -43,6 +43,10 @@ Think about the codebase in this order:
 - `doc/`
   - Detailed architectural and behavioral guides
   - Read the relevant docs before making non-trivial runtime/session/assistant changes
+- `DESIGN.md`
+  - Studio design system guide for humans and coding agents
+  - Read before adding or changing frontend UI
+  - Keep aligned with `src/tokens.css` and `src/primitives.css`
 - `public/`
   - Static assets served by the app
 - `client/`, `dist/`
@@ -75,6 +79,7 @@ In short:
 
 ## Frontend Design System Rules
 
+- Read `DESIGN.md` before adding or changing frontend UI; it describes Studio's product feel, layout language, primitive usage, and design-system workflow
 - `src/tokens.css` is the single source of truth for shared color, spacing, radius, shadow, and typography tokens
 - `src/primitives.css` owns reusable UI primitives such as buttons, inputs, pills, surface cards, and shared navigation treatments
 - if two UI elements have the same job, they should use the same primitive and the same visual treatment
@@ -84,7 +89,7 @@ In short:
 - do not introduce ad hoc token names inside feature CSS when an existing token or alias should be extended centrally in `tokens.css`
 - do not restyle the same interaction pattern independently in each feature without a clear product reason
 - prefer thin borders, compact spacing, soft surface contrast, and restrained accents so the UI stays clean and consistent with Studio
-- when adding new frontend UI, check `tokens.css` and `primitives.css` first before inventing local classes
+- when adding new frontend UI, check `DESIGN.md`, `tokens.css`, and `primitives.css` first before inventing local classes
 
 ## Documentation Rule
 
@@ -107,5 +112,5 @@ Do not leave code and docs out of sync.
 ## Design System Rule
 
 - UI elements with the same role should use the same design language and primitives. Examples include list rows, panels, modals, buttons, and alert messages.
-- Before styling a new component, check the tokens in `src/tokens.css` such as colors, borders, and spacing, along with shared classes in `src/primitives.css` such as `.alert`, `.surface-card`, and `.list-row`.
+- Before styling a new component, check `DESIGN.md`, the tokens in `src/tokens.css` such as colors, borders, and spacing, along with shared classes in `src/primitives.css` such as `.alert`, `.surface-card`, and `.list-row`.
 - Avoid hardcoding arbitrary colors or spacing units in local CSS files. Prefer shared tokens, and promote reusable patterns into `src/primitives.css`.

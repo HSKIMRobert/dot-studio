@@ -666,7 +666,7 @@
     padding: 3px 6px;
 }
 
-.dance-github-add .btn-sm {
+.dance-github-add .btn--sm {
     padding: 3px 8px;
     font-size: var(--font-xs);
     flex-shrink: 0;
