@@ -6,9 +6,25 @@ import os from 'os'
 import { createHash } from 'crypto'
 import { STUDIO_API_PORT, STUDIO_OPENCODE_PORT } from '../../shared/default-ports.js'
 
-function resolvePort(value: string | undefined, fallback: number) {
-    const parsed = Number.parseInt(value || '', 10)
-    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback
+const MIN_PORT = 1
+const MAX_PORT = 65535
+
+function resolvePort(name: 'PORT' | 'OPENCODE_PORT', value: string | undefined, fallback: number) {
+    const trimmed = value?.trim()
+    if (!trimmed) {
+        return fallback
+    }
+
+    if (!/^\d+$/.test(trimmed)) {
+        throw new Error(`Invalid ${name}: ${value}. Expected an integer from ${MIN_PORT} to ${MAX_PORT}.`)
+    }
+
+    const parsed = Number.parseInt(trimmed, 10)
+    if (!Number.isInteger(parsed) || parsed < MIN_PORT || parsed > MAX_PORT) {
+        throw new Error(`Invalid ${name}: ${value}. Expected an integer from ${MIN_PORT} to ${MAX_PORT}.`)
+    }
+
+    return parsed
 }
 
 function resolveDefaultProjectDir() {
@@ -24,11 +40,11 @@ function resolveDefaultProjectDir() {
 }
 
 // ── Constants ───────────────────────────────────────────
-export const PORT = resolvePort(process.env.PORT, STUDIO_API_PORT)
+export const PORT = resolvePort('PORT', process.env.PORT, STUDIO_API_PORT)
 export const DEFAULT_PROJECT_DIR = resolveDefaultProjectDir()
 export const STUDIO_DIR = process.env.STUDIO_DIR || path.join(os.homedir(), '.dot-studio')
 export const STUDIO_OPENCODE_CONFIG_DIR = path.join(STUDIO_DIR, 'opencode')
-export const OPENCODE_PORT = resolvePort(process.env.OPENCODE_PORT, STUDIO_OPENCODE_PORT)
+export const OPENCODE_PORT = resolvePort('OPENCODE_PORT', process.env.OPENCODE_PORT, STUDIO_OPENCODE_PORT)
 export const OPENCODE_URL = `http://localhost:${OPENCODE_PORT}`
 export const STUDIO_CONFIG_PATH = path.join(STUDIO_DIR, 'studio-config.json')
 export const IS_PRODUCTION = process.env.DOT_STUDIO_PRODUCTION === '1'

@@ -65,6 +65,8 @@ class CliUsageError extends Error {}
 
 const DEFAULT_PORT = STUDIO_APP_PORT
 const MAX_PORT_SCAN = 20
+const MIN_PORT = 1
+const MAX_PORT = 65535
 const STATUS_PREFIX: Record<DoctorCheck['status'], string> = {
     ok: 'OK',
     warn: 'WARN',
@@ -122,12 +124,29 @@ function parsePort(value: string | undefined, arg: string): number {
         failUsage(`Missing value for ${arg}`)
     }
 
-    const parsed = Number.parseInt(value, 10)
-    if (!Number.isInteger(parsed) || parsed <= 0) {
-        failUsage(`Invalid port: ${value}`)
+    const trimmed = value.trim()
+    if (!/^\d+$/.test(trimmed)) {
+        failUsage(`Invalid port for ${arg}: ${value}. Expected an integer from ${MIN_PORT} to ${MAX_PORT}.`)
+    }
+
+    const parsed = Number.parseInt(trimmed, 10)
+    if (!Number.isInteger(parsed) || parsed < MIN_PORT || parsed > MAX_PORT) {
+        failUsage(`Invalid port for ${arg}: ${value}. Expected an integer from ${MIN_PORT} to ${MAX_PORT}.`)
     }
 
     return parsed
+}
+
+function parseOptionalEnvPort(name: 'PORT' | 'OPENCODE_PORT'): number | null {
+    const value = process.env[name]?.trim()
+    if (!value) {
+        return null
+    }
+    return parsePort(value, name)
+}
+
+function resolveSidecarPort() {
+    return parseOptionalEnvPort('OPENCODE_PORT') || STUDIO_OPENCODE_PORT
 }
 
 function parseAssetTargetUrn(value: string | undefined, kind: StartupAssetTarget['kind'], arg: string): StartupAssetTarget {
@@ -222,6 +241,8 @@ function parseCliArgs(argv: string[]): CliCommand {
     }
 
     const resolvedProjectDir = resolve(projectDir || process.cwd())
+    const envStudioPort = parseOptionalEnvPort('PORT')
+    resolveSidecarPort()
 
     if (command === 'doctor') {
         if (startupAssetTarget) {
@@ -230,7 +251,7 @@ function parseCliArgs(argv: string[]): CliCommand {
         return {
             kind: 'doctor',
             projectDir: resolvedProjectDir,
-            port: port || Number.parseInt(process.env.PORT || '', 10) || DEFAULT_PORT,
+            port: port ?? envStudioPort ?? DEFAULT_PORT,
             verbose,
         }
     }
@@ -247,6 +268,11 @@ function parseCliArgs(argv: string[]): CliCommand {
 
 function canListenOnPort(port: number) {
     return new Promise<boolean>((resolvePromise) => {
+        if (!Number.isInteger(port) || port < MIN_PORT || port > MAX_PORT) {
+            resolvePromise(false)
+            return
+        }
+
         const server = net.createServer()
         server.once('error', () => {
             resolvePromise(false)
@@ -254,11 +280,15 @@ function canListenOnPort(port: number) {
         server.once('listening', () => {
             server.close(() => resolvePromise(true))
         })
-        server.listen({
-            port,
-            host: '::',
-            exclusive: true,
-        })
+        try {
+            server.listen({
+                port,
+                host: '::',
+                exclusive: true,
+            })
+        } catch {
+            resolvePromise(false)
+        }
     })
 }
 
@@ -435,11 +465,12 @@ async function promptForNpmUpdate(packageMeta: StudioPackageMeta) {
 }
 
 async function resolveOpenPort(requestedPort: number | null) {
-    const basePort = requestedPort || Number.parseInt(process.env.PORT || '', 10) || DEFAULT_PORT
+    const sidecarPort = resolveSidecarPort()
+    const basePort = requestedPort ?? parseOptionalEnvPort('PORT') ?? DEFAULT_PORT
     let resolvedPort = basePort
 
     if (requestedPort) {
-        if (requestedPort === STUDIO_OPENCODE_PORT) {
+        if (requestedPort === sidecarPort) {
             throw new Error(`Port ${requestedPort} is reserved for the managed OpenCode sidecar. Try a different port with --port.`)
         }
         if (!(await canListenOnPort(requestedPort))) {
@@ -448,12 +479,12 @@ async function resolveOpenPort(requestedPort: number | null) {
         return requestedPort
     }
 
-    if (resolvedPort === STUDIO_OPENCODE_PORT) {
+    if (resolvedPort === sidecarPort) {
         resolvedPort += 1
     }
     while (!(await canListenOnPort(resolvedPort))) {
         resolvedPort += 1
-        if (resolvedPort === STUDIO_OPENCODE_PORT) {
+        if (resolvedPort === sidecarPort) {
             resolvedPort += 1
         }
         if (resolvedPort - basePort > MAX_PORT_SCAN) {
@@ -514,7 +545,8 @@ async function runDoctor(command: DoctorCommand, packageMeta: StudioPackageMeta)
         })
     }
 
-    const portReserved = command.port === STUDIO_OPENCODE_PORT
+    const sidecarPort = resolveSidecarPort()
+    const portReserved = command.port === sidecarPort
     const portAvailable = !portReserved && await canListenOnPort(command.port)
     checks.push({
         label: 'Studio port',

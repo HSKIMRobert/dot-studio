@@ -7,10 +7,43 @@ import { refreshAssistantProjectionOnServerStartup } from './services/studio-ass
 
 // Config
 import { PORT, OPENCODE_URL, STUDIO_DIR, IS_PRODUCTION, getActiveProjectDir } from './lib/config.js'
-import { ensureOpencodeSidecar } from './lib/opencode-sidecar.js'
+import { ensureOpencodeSidecar, stopOpencodeSidecar } from './lib/opencode-sidecar.js'
 import { discordIntegrationService } from './services/discord/discord-service.js'
 
 const app = createServerApp()
+let server: ReturnType<typeof serve> | null = null
+let shuttingDown = false
+
+function closeServer() {
+    return new Promise<void>((resolve) => {
+        if (!server) {
+            resolve()
+            return
+        }
+        server.close(() => resolve())
+    })
+}
+
+async function shutdown(signal: NodeJS.Signals) {
+    if (shuttingDown) {
+        return
+    }
+    shuttingDown = true
+
+    console.log(`\n${signal} received. Shutting down DOT Studio...`)
+    await closeServer().catch(() => {})
+    await stopOpencodeSidecar().catch((err) => {
+        console.warn(`OpenCode sidecar shutdown failed: ${err instanceof Error ? err.message : String(err)}`)
+    })
+    process.exit(0)
+}
+
+process.once('SIGINT', () => {
+    void shutdown('SIGINT')
+})
+process.once('SIGTERM', () => {
+    void shutdown('SIGTERM')
+})
 
 // ── Start Server ────────────────────────────────────────
 await ensureOpencodeSidecar().catch((err) => {
@@ -29,5 +62,5 @@ console.log(`   OpenCode: ${OPENCODE_URL} (managed sidecar)`)
 console.log(`   Project:  ${getActiveProjectDir()}`)
 console.log(`   Data:     ${STUDIO_DIR}\n`)
 
-const server = serve({ fetch: app.fetch, port: PORT })
+server = serve({ fetch: app.fetch, port: PORT })
 setupTerminalWs(server as unknown as Parameters<typeof setupTerminalWs>[0], () => getActiveProjectDir())

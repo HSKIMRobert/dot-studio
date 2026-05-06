@@ -6,7 +6,7 @@
 ![Node.js](https://img.shields.io/badge/Node.js-%3E%3D20.19.0-3c873a?style=flat-square)
 [![License](https://img.shields.io/badge/License-MIT-0f172a?style=flat-square)](./LICENSE)
 
-[Overview](#overview) • [Quick Start](#quick-start) • [Core Concepts](#core-concepts) • [How Acts Work](#how-acts-work) • [Workflow](#workflow) • [Discord Integration](#discord-integration) • [CLI](#cli)
+[Overview](#overview) • [Quick Start](#quick-start) • [Core Concepts](#core-concepts) • [How Acts Work](#how-acts-work) • [Workflow](#workflow) • [Discord Integration](#discord-integration) • [Development](#development) • [CLI](#cli)
 
 ![DOT Studio screenshot](.github/screenshot.png)
 
@@ -180,6 +180,31 @@ Discord is a runtime chat surface only: it can talk to standalone performers and
 
 For the full setup and usage walkthrough, see [Discord Integration Guide](DISCORD_INTEGRATION.md).
 
+## Development
+
+Use the full dev stack when working on Studio:
+
+```bash
+npm run dev
+```
+
+This starts the Hono API on `43101`, Vite on `43100`, and the managed OpenCode sidecar on `43102`. The dev runner forces dev mode for the server, so stale production env such as `DOT_STUDIO_PRODUCTION=1` or `PORT=...` will not make the dev server serve the built client or wait on the wrong port.
+
+In dev mode Studio resolves `dance-of-tal/*` imports and the runtime `dot` loader command from the sibling `../dot` checkout instead of the npm package. Set `DOT_STUDIO_DOT_SOURCE_DIR=/path/to/dot` if your local DOT repo lives somewhere else.
+
+For client-only work against an already running API server:
+
+```bash
+npm run dev:client
+```
+
+Production mode is the published CLI path. Build first when testing it from a source checkout:
+
+```bash
+npm run build:all
+npm start -- /path/to/project
+```
+
 ## CLI
 
 ```bash
@@ -212,6 +237,7 @@ Behavior:
 - startup restore is scoped by working directory, so `dot-studio .` and `dot-studio <path>` reopen that directory's saved workspace when one exists
 - if the target directory is not initialized yet, Studio initializes the workspace automatically
 - `dot-studio doctor` checks Node.js, workspace path, Studio port, and OpenCode readiness
+- `--port` and port environment overrides must be valid TCP ports, and Studio will not bind to the managed OpenCode sidecar port
 - `dot-studio --help` shows the built-in CLI help
 
 ## Package Scope

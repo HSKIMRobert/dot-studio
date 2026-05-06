@@ -50,8 +50,7 @@ export function canRestartOpencodeSidecar(): boolean {
 
 export async function isOpencodeReachable(): Promise<boolean> {
     try {
-        const url = new URL('/project', OPENCODE_URL)
-        url.searchParams.set('directory', path.resolve(DEFAULT_PROJECT_DIR))
+        const url = new URL('/global/health', OPENCODE_URL)
         const controller = new AbortController()
         const timeout = setTimeout(() => controller.abort(), 1_500)
         try {
@@ -120,6 +119,25 @@ function stopChildProcess(target: ChildProcess, force = false) {
     target.kill(force ? 'SIGKILL' : 'SIGTERM')
 }
 
+export async function stopOpencodeSidecar(): Promise<void> {
+    if (!child) {
+        reachabilityCache = null
+        return
+    }
+
+    const currentChild = child
+    stopChildProcess(currentChild)
+    await waitForShutdown().catch(async () => {
+        stopChildProcess(currentChild, true)
+        await waitForShutdown()
+    }).finally(() => {
+        if (child === currentChild) {
+            child = null
+        }
+        reachabilityCache = null
+    })
+}
+
 export async function ensureOpencodeSidecar(): Promise<void> {
     if (startupPromise) {
         return startupPromise
@@ -132,6 +150,9 @@ export async function ensureOpencodeSidecar(): Promise<void> {
         if (await getReachability()) {
             return
         }
+        await waitForReady()
+        reachabilityCache = { ok: true, checkedAt: Date.now() }
+        return
     }
 
     if (await getReachability(true)) {
@@ -155,6 +176,16 @@ export async function ensureOpencodeSidecar(): Promise<void> {
         )
 
         child = opencode
+        const spawnError = new Promise<never>((_, reject) => {
+            opencode.once('error', (error) => {
+                if (child === opencode) {
+                    child = null
+                }
+                reachabilityCache = null
+                reject(error)
+            })
+        })
+        spawnError.catch(() => {})
         opencode.once('exit', () => {
             if (child === opencode) {
                 child = null
@@ -162,7 +193,7 @@ export async function ensureOpencodeSidecar(): Promise<void> {
             reachabilityCache = null
         })
 
-        await waitForReady()
+        await Promise.race([waitForReady(), spawnError])
         reachabilityCache = { ok: true, checkedAt: Date.now() }
     })().finally(() => {
         startupPromise = null

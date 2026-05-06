@@ -1,8 +1,11 @@
 import path from 'path'
+import fs from 'fs'
 import { createHash } from 'crypto'
+import { fileURLToPath } from 'url'
 import { getOpencode } from './opencode.js'
 import { unwrapOpencodeResult } from './opencode-errors.js'
-import { resolvePackageBin } from './package-bin.js'
+import { DEFAULT_PROJECT_DIR, IS_PRODUCTION } from './config.js'
+import { resolvePackageBin, resolvePackageBinCommand } from './package-bin.js'
 import type { McpLiveStatusMap } from './mcp-catalog.js'
 
 type McpAddConfig = {
@@ -13,9 +16,49 @@ type McpAddConfig = {
 }
 
 export const CAPABILITY_LOADER_TOOL_NAME = 'load_capability_context'
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
-function resolveDotCommand(): string {
-    return resolvePackageBin('dance-of-tal', 'dance-of-tal') || 'dance-of-tal'
+function isDotPackageRoot(directory: string | null | undefined) {
+    if (!directory) {
+        return false
+    }
+
+    try {
+        const packageJson = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf-8')) as { name?: string }
+        return packageJson.name === 'dance-of-tal'
+            && fs.existsSync(path.join(directory, 'src', 'cli', 'dot.ts'))
+    } catch {
+        return false
+    }
+}
+
+export function resolveLocalDotRoot() {
+    if (IS_PRODUCTION) {
+        return null
+    }
+
+    const candidates = [
+        process.env.DOT_STUDIO_DOT_SOURCE_DIR,
+        path.resolve(process.cwd(), '..', 'dot'),
+        path.resolve(DEFAULT_PROJECT_DIR, 'dot'),
+        path.resolve(__dirname, '..', '..', '..', 'dot'),
+        path.resolve(__dirname, '..', '..', '..', '..', 'dot'),
+    ]
+
+    return candidates.find(isDotPackageRoot) || null
+}
+
+export function resolveDotCommand(): string[] {
+    const localDotRoot = resolveLocalDotRoot()
+    if (localDotRoot) {
+        const tsxCommand = resolvePackageBinCommand('tsx', 'tsx')
+        const dotCliPath = path.join(localDotRoot, 'src', 'cli', 'dot.ts')
+        if (tsxCommand) {
+            return [tsxCommand.command, ...tsxCommand.args, dotCliPath]
+        }
+    }
+
+    return [resolvePackageBin('dance-of-tal', 'dance-of-tal') || 'dance-of-tal']
 }
 
 export function dotLoaderServerName(cwd: string): string {
@@ -50,7 +93,7 @@ export async function ensureDotLoaderServer(cwd: string): Promise<{
     if (!existing) {
         const config = {
             type: 'local',
-            command: [resolveDotCommand()],
+            command: resolveDotCommand(),
             enabled: true,
             environment: {
                 DANCE_OF_TAL_PROJECT_DIR: path.resolve(cwd),
