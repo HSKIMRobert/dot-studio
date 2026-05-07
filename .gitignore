@@ -12,6 +12,7 @@ output/
 test-results/
 tmp-client-sourcemap/
 .playwright-cli/
+.playwright-mcp/
 
 
 # Environment and machine-local config
