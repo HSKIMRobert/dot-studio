@@ -1,22 +1,12 @@
-<div align="center">
-  <h1>DOT Studio</h1>
-  <p><strong>A local visual workspace for choreographing AI performers and Acts on top of OpenCode.</strong></p>
+# DOT Studio
 
-  <p>
-    <a href="https://www.npmjs.com/package/dot-studio"><img alt="npm version" src="https://img.shields.io/npm/v/dot-studio?style=flat-square"></a>
-    <img alt="Node.js >=20.19.0" src="https://img.shields.io/badge/Node.js-%3E%3D20.19.0-3c873a?style=flat-square">
-    <a href="./LICENSE"><img alt="License: MIT" src="https://img.shields.io/badge/License-MIT-0f172a?style=flat-square"></a>
-  </p>
+**A local visual workspace for choreographing AI performers and Acts on top of OpenCode.**
 
-  <p>
-    <a href="#quick-start">Quick Start</a>
-    &middot; <a href="#why-studio">Why Studio</a>
-    &middot; <a href="#how-it-works">How It Works</a>
-    &middot; <a href="#core-concepts">Core Concepts</a>
-    &middot; <a href="#cli">CLI</a>
-    &middot; <a href="#development">Development</a>
-  </p>
-</div>
+[![npm version](https://img.shields.io/npm/v/dot-studio?style=flat-square)](https://www.npmjs.com/package/dot-studio)
+![Node.js >=20.19.0](https://img.shields.io/badge/Node.js-%3E%3D20.19.0-3c873a?style=flat-square)
+[![License: MIT](https://img.shields.io/badge/License-MIT-0f172a?style=flat-square)](./LICENSE)
+
+[Quick Start](#quick-start) | [Why Studio](#why-studio) | [How It Works](#how-it-works) | [Core Concepts](#core-concepts) | [CLI](#cli) | [Development](#development)
 
 ![DOT Studio canvas](.github/screenshot.png)
 
@@ -275,10 +265,4 @@ MIT. See [LICENSE](LICENSE).
 
 ## Star History
 
-<a href="https://www.star-history.com/?repos=dance-of-tal%2Fdot-studio&type=date&legend=top-left">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=dance-of-tal/dot-studio&type=date&theme=dark&legend=top-left" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=dance-of-tal/dot-studio&type=date&legend=top-left" />
-   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=dance-of-tal/dot-studio&type=date&legend=top-left" />
- </picture>
-</a>
+[![Star History Chart](https://api.star-history.com/chart?repos=dance-of-tal%2Fdot-studio&type=date&legend=top-left)](https://www.star-history.com/?repos=dance-of-tal%2Fdot-studio&type=date&legend=top-left)
