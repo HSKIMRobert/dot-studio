@@ -33,6 +33,8 @@ describe('buildPerformerAssetPayload', () => {
                 github: { command: 'placeholder' },
             },
         })
+        expect(payload).not.toHaveProperty('$schema')
+        expect(payload).not.toHaveProperty('schema')
     })
 
     it('exports selected MCP server names as portable requirements for scratch performers', () => {
@@ -147,6 +149,28 @@ describe('buildActAssetPayload', () => {
             ],
             createdAt: Date.now(),
         })).toThrow('requires a description')
+    })
+
+    it('exports canonical act assets without schema metadata', () => {
+        const payload = buildActAssetPayload({
+            id: 'act-1',
+            name: 'Review Flow',
+            position: { x: 0, y: 0 },
+            width: 400,
+            height: 300,
+            participants: {
+                'participant-lead': {
+                    performerRef: { kind: 'registry', urn: 'performer/@studio/main/lead' },
+                    displayName: 'Lead',
+                    position: { x: 0, y: 0 },
+                },
+            },
+            relations: [],
+            createdAt: Date.now(),
+        })
+
+        expect(payload).not.toHaveProperty('$schema')
+        expect(payload).not.toHaveProperty('schema')
     })
 })
 

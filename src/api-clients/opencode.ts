@@ -34,6 +34,14 @@ export const opencodeApi = {
             disposedDirectories: string[]
         }>('/api/opencode/runtime/apply'),
 
+    terminal: {
+        shells: () => fetchJSON<Array<{
+            path: string
+            name: string
+            acceptable: boolean
+        }>>('/api/opencode/terminal/shells'),
+    },
+
     mcp: {
         getCatalog: () => fetchJSON<McpCatalog>('/api/mcp/catalog'),
         updateCatalog: (catalog: McpCatalog) => putJSON<McpCatalog>('/api/mcp/catalog', catalog),

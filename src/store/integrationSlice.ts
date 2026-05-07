@@ -738,6 +738,13 @@ export const createIntegrationSlice: StateCreator<
                     lines.push(`// Capability Loader Tool: ${res.toolName}`)
                 }
 
+                if (res.instructionStack?.length) {
+                    lines.push('', '// Instruction Stack')
+                    for (const [index, layer] of res.instructionStack.entries()) {
+                        lines.push(`// ${index + 1}. ${layer.label}: ${layer.detail}`)
+                    }
+                }
+
                 if (res.danceCatalog.length > 0) {
                     lines.push('', '// Dance Catalog')
                     for (const dance of res.danceCatalog) {

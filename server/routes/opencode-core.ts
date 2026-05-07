@@ -9,6 +9,7 @@ import {
     getOpenCodeUnavailableHealth,
     getProviderAuthMethods,
     getVcsStatus,
+    listTerminalShells,
     listOpenCodeAgents,
     readProjectConfigSnapshot,
     restartManagedOpenCode,
@@ -45,6 +46,14 @@ opencodeCore.post('/api/opencode/runtime/apply', async (c) => {
         return c.json(await applyStudioRuntimeReload(requestWorkingDir(c)))
     } catch (err) {
         return jsonOpencodeError(c, err)
+    }
+})
+
+opencodeCore.get('/api/opencode/terminal/shells', async (c) => {
+    try {
+        return c.json(await listTerminalShells(requestWorkingDir(c)))
+    } catch {
+        return c.json([])
     }
 })
 

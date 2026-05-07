@@ -2285,7 +2285,7 @@ class DiscordIntegrationService {
             await this.handlePerformerMessage(message, target, content)
             return
         }
-        await this.handleActThreadMessage(message, target)
+        await this.handleActThreadMessage(message)
     }
 
     private async loadSnapshotForTarget(target: DiscordChannelTarget) {
@@ -2355,7 +2355,7 @@ class DiscordIntegrationService {
         }
     }
 
-    private async handleActThreadMessage(message: Message, _target: Extract<DiscordChannelTarget, { kind: 'act-thread' }>) {
+    private async handleActThreadMessage(message: Message) {
         await message.reply({
             content: 'Use `/act message` in this Act thread to choose a participant and send a message. Direct Act chat messages are not routed.',
             allowedMentions: { parse: [] },

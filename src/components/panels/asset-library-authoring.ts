@@ -41,7 +41,6 @@ type AuthorableAsset = {
     model?: unknown
     modelVariant?: string | null
     mcpConfig?: Record<string, unknown> | null
-    schema?: string
     participants?: unknown[]
     relations?: unknown[]
     actRules?: string[]

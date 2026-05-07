@@ -114,6 +114,30 @@
     align-items: stretch;
 }
 
+.stg-inline-control {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.stg-shell-select {
+    min-width: 180px;
+}
+
+.stg-inline-status,
+.stg-inline-error {
+    font-size: var(--font-sm);
+}
+
+.stg-inline-status {
+    color: var(--status-success);
+}
+
+.stg-inline-error {
+    color: var(--status-danger);
+}
+
 .alert--danger {
     margin-bottom: 16px;
 }

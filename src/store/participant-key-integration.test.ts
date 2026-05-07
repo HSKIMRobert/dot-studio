@@ -126,6 +126,8 @@ describe('Participant Keys And Labels', () => {
             expect(payload.payload.participants[0]).not.toHaveProperty('id')
 
             expect(payload.payload.relations[0].between).toEqual(['Coder', 'Reviewer'])
+            expect(payload).not.toHaveProperty('$schema')
+            expect(payload).not.toHaveProperty('schema')
         })
 
         it('rejects draft performers in asset payload', () => {

@@ -146,7 +146,11 @@ Every execution path should follow this order.
 - Studio terminal PTYs are owned by the Studio server, not OpenCode
 - OpenCode `instance.dispose` must not close pinned or canvas terminal sessions
 - terminal exit and kill behavior belongs to `server/terminal.ts`
-- terminal shell selection is platform-specific; Unix uses login shells, Windows uses `ComSpec`/`cmd.exe` unless `DOT_STUDIO_TERMINAL_SHELL` is set
+- terminal shell selection follows this order:
+  - `DOT_STUDIO_TERMINAL_SHELL`
+  - Studio-owned OpenCode global config `shell`
+  - platform default (`SHELL`/`zsh` on Unix, `ComSpec`/`cmd.exe` on Windows)
+- Studio terminal WebSocket disconnects should reconnect to the existing OpenCode PTY when the PTY itself is still alive
 
 ## Do Not Reintroduce
 

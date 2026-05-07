@@ -50,10 +50,6 @@ function assetAuthor(asset: ParsedInstalledAsset) {
     return `@${parseDotAssetUrn(asset.urn).owner}`
 }
 
-function assetSchema(asset: ParsedInstalledAsset) {
-    return (asset as ParsedInstalledAsset & { $schema?: string }).$schema
-}
-
 function normalizeAsset(
     asset: ParsedInstalledAsset,
     source: 'global' | 'stage' | 'registry',
@@ -72,7 +68,6 @@ function normalizeAsset(
                 source,
                 description: asset.description || '',
                 tags: asset.tags || [],
-                schema: assetSchema(asset),
                 ...(detail ? { content: asset.payload.content } : {}),
             }
         case 'dance':
@@ -85,7 +80,6 @@ function normalizeAsset(
                 source,
                 description: asset.description || '',
                 tags: asset.tags || [],
-                schema: assetSchema(asset),
                 ...(githubSource ? { github: githubSource } : {}),
                 ...(detail ? { content: asset.payload.content } : {}),
             }
@@ -103,7 +97,6 @@ function normalizeAsset(
                 source,
                 description: asset.description || '',
                 tags: asset.tags || [],
-                schema: assetSchema(asset),
                 talUrn: asset.payload.tal || null,
                 danceUrns: asset.payload.dances || [],
                 model: asset.payload.model || null,
@@ -124,7 +117,6 @@ function normalizeAsset(
                 source,
                 description: asset.description || '',
                 tags: asset.tags || [],
-                schema: assetSchema(asset),
                 actRules: asset.payload.actRules || [],
                 participantCount: asset.payload.participants.length,
                 relationCount: asset.payload.relations.length,

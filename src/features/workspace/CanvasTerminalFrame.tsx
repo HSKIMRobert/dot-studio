@@ -117,6 +117,7 @@ export default function CanvasTerminalFrame({ data }: NodeProps<Node<CanvasTermi
     const outputInitialized = useRef(false); // tracks first real output
     const [connected, setConnected] = useState(false);
     const [exited, setExited] = useState(false);
+    const [reconnecting, setReconnecting] = useState(false);
     const workingDir = useStudioStore(s => s.workingDir);
 
     const connect = useCallback(() => {
@@ -157,6 +158,7 @@ export default function CanvasTerminalFrame({ data }: NodeProps<Node<CanvasTermi
                     case 'connected':
                         setConnected(true);
                         setExited(false);
+                        setReconnecting(false);
                         onSessionChange(msg.id, true);
                         setTimeout(() => {
                             fitRef.current?.fit();
@@ -169,9 +171,19 @@ export default function CanvasTerminalFrame({ data }: NodeProps<Node<CanvasTermi
                             }
                         }, 100);
                         break;
+                    case 'pty-reconnecting':
+                        setReconnecting(true);
+                        xtermRef.current?.write('\r\n\x1b[33mTerminal connection lost. Reconnecting…\x1b[0m\r\n');
+                        break;
+                    case 'pty-connected':
+                        setConnected(true);
+                        setReconnecting(false);
+                        xtermRef.current?.write('\r\n\x1b[32mTerminal reconnected.\x1b[0m\r\n');
+                        break;
                     case 'exit':
                         setConnected(false);
                         setExited(true);
+                        setReconnecting(false);
                         onSessionChange(null, false);
                         // Auto-remove after brief delay so user sees "Exited"
                         setTimeout(() => {
@@ -287,7 +299,7 @@ export default function CanvasTerminalFrame({ data }: NodeProps<Node<CanvasTermi
                     <TerminalIcon size={12} />
                     <span className="canvas-frame__name">{title}</span>
                     <span className={`canvas-terminal-frame__status ${!connected ? 'canvas-terminal-frame__status--disconnected' : ''}`}>
-                        {exited ? 'Exited' : connected ? 'Connected' : 'Connecting…'}
+                        {exited ? 'Exited' : reconnecting ? 'Reconnecting…' : connected ? 'Connected' : 'Connecting…'}
                     </span>
                 </>
             )}

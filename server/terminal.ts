@@ -2,6 +2,7 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type { Server as HttpServer } from 'http';
 import { OPENCODE_URL } from './lib/config.js';
+import { readGlobalConfigFile } from './lib/global-config.js';
 
 interface TerminalSession {
     id: string;          // local Studio session id
@@ -12,16 +13,26 @@ interface TerminalSession {
     cwd: string;
     ptyWs: WebSocket | null; // WebSocket to OpenCode PTY
     initialized: boolean; // track whether initial prompt has arrived
+    cursor: number;
+    reconnectAttempts: number;
+    reconnectTimer: ReturnType<typeof setTimeout> | null;
+    closing: boolean;
 }
 
 const MAX_BUFFER = 500;
 const sessions = new Map<string, TerminalSession>();
 let sessionCounter = 0;
 
-function resolveTerminalShell(): { command: string; args: string[] } {
+async function resolveTerminalShell(): Promise<{ command: string; args: string[] }> {
     const explicitShell = process.env.DOT_STUDIO_TERMINAL_SHELL?.trim();
     if (explicitShell) {
         return { command: explicitShell, args: process.platform === 'win32' ? [] : ['-l'] };
+    }
+
+    const config = await readGlobalConfigFile().catch(() => ({} as Record<string, unknown>));
+    const configuredShell = typeof config.shell === 'string' ? config.shell.trim() : '';
+    if (configuredShell) {
+        return { command: configuredShell, args: process.platform === 'win32' ? [] : ['-l'] };
     }
 
     if (process.platform === 'win32') {
@@ -33,6 +44,15 @@ function resolveTerminalShell(): { command: string; args: string[] } {
 
 function errorMessage(error: unknown, fallback = 'Unknown error'): string {
     return error instanceof Error && error.message ? error.message : fallback;
+}
+
+function safeJsonParse<T>(raw: string): T | null {
+    if (!raw) return null;
+    try {
+        return JSON.parse(raw) as T;
+    } catch {
+        return null;
+    }
 }
 
 function stripTerminalNoise(input: string): string {
@@ -106,12 +126,14 @@ async function opencodePtyRequest<T>(path: string, init: RequestInit, directory?
     });
 
     const raw = await res.text();
-    const payload = raw ? JSON.parse(raw) : null;
+    const payload = safeJsonParse<Record<string, unknown>>(raw);
     if (!res.ok) {
-        const message = payload?.error?.message
-            || payload?.error
-            || payload?.data?.message
-            || payload?.message
+        const errorRecord = payload?.error && typeof payload.error === 'object' ? payload.error as Record<string, unknown> : null;
+        const dataRecord = payload?.data && typeof payload.data === 'object' ? payload.data as Record<string, unknown> : null;
+        const message = (typeof errorRecord?.message === 'string' ? errorRecord.message : '')
+            || (typeof payload?.error === 'string' ? payload.error : '')
+            || (typeof dataRecord?.message === 'string' ? dataRecord.message : '')
+            || (typeof payload?.message === 'string' ? payload.message : '')
             || raw
             || `OpenCode PTY request failed (${res.status})`;
         throw new Error(String(message));
@@ -149,7 +171,7 @@ export function setupTerminalWs(server: HttpServer, defaultCwd: string | (() => 
     async function createSession(ws: WebSocket, cwd: string) {
         sessionCounter++;
         const id = `term-${sessionCounter}`;
-        const shell = resolveTerminalShell();
+        const shell = await resolveTerminalShell();
         const title = `Terminal ${sessionCounter}`;
 
         try {
@@ -172,7 +194,20 @@ export function setupTerminalWs(server: HttpServer, defaultCwd: string | (() => 
                 throw new Error('Failed to create PTY session: no ID returned');
             }
 
-            const session: TerminalSession = { id, ptyID, ws, title, buffer: [], cwd, ptyWs: null, initialized: false };
+            const session: TerminalSession = {
+                id,
+                ptyID,
+                ws,
+                title,
+                buffer: [],
+                cwd,
+                ptyWs: null,
+                initialized: false,
+                cursor: -1,
+                reconnectAttempts: 0,
+                reconnectTimer: null,
+                closing: false,
+            };
             sessions.set(id, session);
 
             // Connect to OpenCode PTY WebSocket for real-time I/O
@@ -195,11 +230,20 @@ export function setupTerminalWs(server: HttpServer, defaultCwd: string | (() => 
     }
 
     function connectPtyWebSocket(session: TerminalSession) {
+        if (!sessions.has(session.id) || session.closing) return;
+        if (session.reconnectTimer) {
+            clearTimeout(session.reconnectTimer);
+            session.reconnectTimer = null;
+        }
+
         // Build OpenCode PTY WebSocket URL
         const baseUrl = OPENCODE_URL.replace(/^http/, 'ws');
         const ptyUrl = new URL(`/pty/${session.ptyID}/connect`, baseUrl);
         if (session.cwd) {
             ptyUrl.searchParams.set('directory', session.cwd);
+        }
+        if (session.cursor >= 0) {
+            ptyUrl.searchParams.set('cursor', String(session.cursor));
         }
         const ptyWsUrl = ptyUrl.toString();
 
@@ -207,6 +251,14 @@ export function setupTerminalWs(server: HttpServer, defaultCwd: string | (() => 
         session.ptyWs = ptyWs;
 
         ptyWs.on('message', (rawData) => {
+            if (Buffer.isBuffer(rawData) && rawData[0] === 0) {
+                const meta = safeJsonParse<{ cursor?: unknown }>(rawData.subarray(1).toString());
+                if (typeof meta?.cursor === 'number' && Number.isSafeInteger(meta.cursor) && meta.cursor >= 0) {
+                    session.cursor = meta.cursor;
+                }
+                return;
+            }
+
             const data = rawData.toString();
 
             // Filter initial noise like {"cursor":0}% that zsh/bash emit before the first prompt.
@@ -221,6 +273,7 @@ export function setupTerminalWs(server: HttpServer, defaultCwd: string | (() => 
                 session.initialized = true;
             }
 
+            session.cursor = Math.max(0, session.cursor) + data.length;
             addToBuffer(session, data);
             if (session.ws?.readyState === WebSocket.OPEN) {
                 session.ws.send(JSON.stringify({ type: 'output', data }));
@@ -248,10 +301,17 @@ export function setupTerminalWs(server: HttpServer, defaultCwd: string | (() => 
             }
         }, 2000);
 
+        ptyWs.on('open', () => {
+            session.reconnectAttempts = 0;
+            if (session.ws?.readyState === WebSocket.OPEN) {
+                session.ws.send(JSON.stringify({ type: 'pty-connected', id: session.id }));
+            }
+        });
+
         ptyWs.on('close', () => {
             clearInterval(statusInterval);
             session.ptyWs = null;
-            handleSessionExit(session);
+            void handlePtyWebSocketClose(session);
         });
 
         ptyWs.on('error', (err) => {
@@ -259,8 +319,42 @@ export function setupTerminalWs(server: HttpServer, defaultCwd: string | (() => 
         });
     }
 
+    async function isPtyExited(session: TerminalSession) {
+        try {
+            const info = await opencodePtyRequest<{ status?: string }>(`/pty/${session.ptyID}`, {
+                method: 'GET',
+            }, session.cwd);
+            return info?.status === 'exited';
+        } catch {
+            return true;
+        }
+    }
+
+    async function handlePtyWebSocketClose(session: TerminalSession) {
+        if (!sessions.has(session.id) || session.closing) return;
+        if (await isPtyExited(session)) {
+            handleSessionExit(session);
+            return;
+        }
+
+        const delayMs = Math.min(250 * 2 ** Math.min(session.reconnectAttempts, 4), 4_000);
+        session.reconnectAttempts += 1;
+        if (session.ws?.readyState === WebSocket.OPEN) {
+            session.ws.send(JSON.stringify({ type: 'pty-reconnecting', id: session.id, delayMs }));
+        }
+        session.reconnectTimer = setTimeout(() => {
+            session.reconnectTimer = null;
+            connectPtyWebSocket(session);
+        }, delayMs);
+    }
+
     function handleSessionExit(session: TerminalSession) {
         if (!sessions.has(session.id)) return; // Already handled
+        session.closing = true;
+        if (session.reconnectTimer) {
+            clearTimeout(session.reconnectTimer);
+            session.reconnectTimer = null;
+        }
         // Notify client that the session has exited
         if (session.ws?.readyState === WebSocket.OPEN) {
             session.ws.send(JSON.stringify({ type: 'exit', id: session.id }));
@@ -324,6 +418,11 @@ export function setupTerminalWs(server: HttpServer, defaultCwd: string | (() => 
                     case 'kill': {
                         const target = sessions.get(parsed.id);
                         if (target && target.cwd === session.cwd) {
+                            target.closing = true;
+                            if (target.reconnectTimer) {
+                                clearTimeout(target.reconnectTimer);
+                                target.reconnectTimer = null;
+                            }
                             try {
                                 await opencodePtyRequest(`/pty/${target.ptyID}`, {
                                     method: 'DELETE',

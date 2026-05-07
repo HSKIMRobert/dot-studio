@@ -7,9 +7,20 @@ import { useEffect, useMemo, useState } from 'react'
 import { Search, X } from 'lucide-react'
 import { api } from '../../api'
 import { buildRuntimeModelProviderGroups } from '../../lib/runtime-models'
-import type { ConnectedModel } from './settings-utils'
+import type { RuntimeModelVariant } from '../../../shared/model-variants'
 
-type ModelEntry = Pick<ConnectedModel, 'id' | 'name' | 'provider' | 'providerName' | 'toolCall' | 'reasoning' | 'connected'>
+type ModelEntry = {
+    id: string
+    name: string
+    provider: string
+    providerName: string
+    toolCall: boolean
+    reasoning: boolean
+    attachment: boolean
+    connected: boolean
+    context: number
+    variants: RuntimeModelVariant[]
+}
 
 interface ProviderGroup {
     providerId: string
@@ -36,7 +47,10 @@ export default function SettingsModels() {
                     providerName: m.providerName || m.provider,
                     toolCall: !!m.toolCall,
                     reasoning: !!m.reasoning,
+                    attachment: !!m.attachment,
                     connected: !!m.connected,
+                    context: Number(m.context || 0),
+                    variants: m.variants || [],
                 }))
                 setModels(entries)
             } catch {
@@ -105,6 +119,9 @@ export default function SettingsModels() {
                                                     {model.id}
                                                     {model.toolCall ? ' · tools' : ''}
                                                     {model.reasoning ? ' · reasoning' : ''}
+                                                    {model.attachment ? ' · attachments' : ''}
+                                                    {model.variants.length > 0 ? ` · ${model.variants.length} variant${model.variants.length === 1 ? '' : 's'}` : ''}
+                                                    {model.context ? ` · ${model.context.toLocaleString()} ctx` : ''}
                                                 </span>
                                             </div>
                                         </div>

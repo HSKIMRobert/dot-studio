@@ -103,11 +103,15 @@ function MessageParts({
                     return <ReasoningBlock key={part.id} content={part.content} streaming={streaming} />
                 }
                 if (part.type === 'compaction') {
+                    const summary = part.compaction?.summary?.trim()
                     return (
                         <div key={part.id} className="compaction-divider">
                             <span className="compaction-divider__line" />
-                            <span className="compaction-divider__label">
-                                {part.compaction?.auto ? 'auto compacted' : 'compacted'}
+                            <span
+                                className="compaction-divider__label"
+                                title={summary || undefined}
+                            >
+                                {summary ? `compacted: ${summary.slice(0, 80)}${summary.length > 80 ? '…' : ''}` : part.compaction?.auto ? 'auto compacted' : 'compacted'}
                             </span>
                             <span className="compaction-divider__line" />
                         </div>

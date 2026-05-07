@@ -184,7 +184,6 @@ export function buildPerformerAssetPayload(
     const tags = (options.tags || []).filter((tag) => tag.trim().length > 0)
 
     return {
-        $schema: 'https://schemas.danceoftal.com/assets/performer.v1.json' as const,
         kind: 'performer' as const,
         urn: `performer/@pending/${slugifyAssetName(options.name.trim() || 'untitled-performer')}`,
         description,
@@ -244,7 +243,6 @@ export function buildActAssetPayload(
     }))
 
     return {
-        $schema: 'https://schemas.danceoftal.com/assets/act.v1.json' as const,
         kind: 'act' as const,
         urn: `act/@pending/${slugifyAssetName(act.name || 'untitled-act')}`,
         description: options.description?.trim() || act.description || act.name,

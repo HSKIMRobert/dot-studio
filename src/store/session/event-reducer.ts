@@ -9,7 +9,7 @@
  */
 import type { StudioState } from '../types'
 import type { SessionStatus } from './types'
-import type { ChatMessage, ChatMessagePart } from '../../types'
+import type { ChatMessage, ChatMessagePart, ChatMessageToolInfo } from '../../types'
 import type { PermissionRequest, QuestionRequest, Todo } from '@opencode-ai/sdk/v2'
 
 // ── Shared types ──
@@ -79,7 +79,7 @@ export function reduceMessagePartUpdated(
         tool?: string
         callID?: string
         state?: {
-            status?: 'pending' | 'running' | 'completed' | 'error'
+            status?: 'pending' | 'running' | 'completed' | 'error' | 'failed'
             title?: string
             input?: unknown
             metadata?: unknown
@@ -125,18 +125,19 @@ export function reduceMessagePartUpdated(
 
     if (part.type === 'tool') {
         const s = part.state || {}
+        const status = s.status === 'failed' ? 'error' : s.status
         const toolPart: ChatMessagePart = {
             id: part.id,
             type: 'tool',
             tool: {
                 name: part.tool || 'unknown',
                 callId: part.callID || part.id,
-                status: s.status || 'pending',
+                status: status || 'pending',
                 title: s.title,
                 input: s.input as Record<string, unknown> | undefined,
                 metadata: s.metadata as Record<string, unknown> | undefined,
                 output: s.output as string | undefined,
-                error: s.error as string | undefined,
+                error: formatToolError(s.error),
                 time: s.time,
             },
         }
@@ -166,7 +167,11 @@ export function reduceMessagePartUpdated(
         const compactionPart: ChatMessagePart = {
             id: part.id,
             type: 'compaction',
-            compaction: { auto: !!part.auto, overflow: part.overflow as boolean | undefined },
+            compaction: {
+                auto: !!part.auto,
+                overflow: part.overflow as boolean | undefined,
+                summary: typeof part.text === 'string' ? part.text : undefined,
+            },
         }
         const updated = upsertMessagePart(messages, messageId, compactionPart)
         set({ seMessages: { ...state.seMessages, [sessionId]: updated } })
@@ -272,6 +277,52 @@ export function reduceMessagePartRemoved(
     const messages = state.seMessages[sessionId] || []
     const updated = removeMessagePartFromMessages(messages, messageId, partId)
     set({ seMessages: { ...state.seMessages, [sessionId]: updated } })
+}
+
+export function reduceToolCallStatusByCallId(
+    sessionId: string,
+    callId: string,
+    patch: Partial<ChatMessageToolInfo>,
+    get: GetFn,
+    set: SetFn,
+) {
+    const state = get()
+    if (!hasSession(state, sessionId) || !callId) return
+
+    const messages = state.seMessages[sessionId] || []
+    let changed = false
+    const nextMessages = messages.map((message) => {
+        if (!message.parts?.length) return message
+
+        let messageChanged = false
+        const nextParts = message.parts.map((part) => {
+            if (part.type !== 'tool' || !part.tool || part.tool.callId !== callId) {
+                return part
+            }
+            messageChanged = true
+            changed = true
+            return {
+                ...part,
+                tool: {
+                    ...part.tool,
+                    ...patch,
+                    error: patch.error !== undefined ? formatToolError(patch.error) : part.tool.error,
+                    metadata: patch.metadata !== undefined
+                        ? {
+                            ...(part.tool.metadata || {}),
+                            ...patch.metadata,
+                        }
+                        : part.tool.metadata,
+                },
+            }
+        })
+
+        return messageChanged ? { ...message, parts: nextParts } : message
+    })
+
+    if (changed) {
+        set({ seMessages: { ...state.seMessages, [sessionId]: nextMessages } })
+    }
 }
 
 // ── Session Status Reducers ──
@@ -586,4 +637,31 @@ function upsertMessageEnvelope(
         timestamp,
     })
     return next
+}
+
+function formatToolError(error: unknown): string | undefined {
+    if (error === undefined || error === null) {
+        return undefined
+    }
+    if (typeof error === 'string') {
+        return error
+    }
+    if (typeof error === 'object') {
+        const record = error as Record<string, unknown>
+        const data = record.data && typeof record.data === 'object' ? record.data as Record<string, unknown> : null
+        const message = typeof data?.message === 'string' && data.message.trim()
+            ? data.message.trim()
+            : typeof record.message === 'string' && record.message.trim()
+                ? record.message.trim()
+                : null
+        if (message) {
+            return message
+        }
+        try {
+            return JSON.stringify(error)
+        } catch {
+            return 'Tool call failed.'
+        }
+    }
+    return String(error)
 }

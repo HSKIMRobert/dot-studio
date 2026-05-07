@@ -121,6 +121,7 @@ Key rules:
 - coalesced streaming must not drop `message.part.delta` content
 - if OpenCode stops reporting a status but the assistant snapshot is settled, Studio should treat the session as settled
 - a parked `wait_until` turn should return to live-running when a later event arrives
+- OpenCode `session.next.*` failure and retry events should feed the same normalized session status and tool state tables as legacy `session.error` and `message.part.updated`
 
 ## Runtime Guards
 

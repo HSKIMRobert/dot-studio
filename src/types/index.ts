@@ -34,7 +34,6 @@ export interface AssetCard {
     relationCount?: number
     participants?: InstalledActParticipant[]
     relations?: InstalledActRelation[]
-    schema?: string
     stars?: number
     tier?: string
     updatedAt?: string
@@ -299,6 +298,10 @@ export interface RuntimeToolResolution {
 export interface PromptPreview {
     system: string
     agent: string
+    instructionStack?: Array<{
+        label: string
+        detail: string
+    }>
     danceCatalog: DanceCatalogEntry[]
     capabilitySnapshot: ModelCapabilities | null
     toolName?: string
@@ -330,6 +333,7 @@ export interface ChatMessagePart {
     compaction?: {
         auto: boolean
         overflow?: boolean
+        summary?: string
     }
 }
 

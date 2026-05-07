@@ -25,6 +25,7 @@ import {
     reducePermissionReplied,
     reduceQuestionAsked,
     reduceTodoUpdated,
+    reduceToolCallStatusByCallId,
 } from './event-reducer'
 
 type SetFn = (partial: Partial<StudioState> | ((state: StudioState) => Partial<StudioState>)) => void
@@ -57,7 +58,7 @@ type MessagePartRecord = {
     callID?: string
     callId?: string
     state?: {
-        status?: 'pending' | 'running' | 'completed' | 'error'
+        status?: 'pending' | 'running' | 'completed' | 'error' | 'failed'
         title?: string
         input?: unknown
         output?: unknown
@@ -358,6 +359,109 @@ export function createEventIngest(options: EventIngestOptions) {
                 return
             }
 
+            case 'session.next.step.failed': {
+                const sessionID = readSessionId(props)
+                if (!sessionID) return
+                const errorMessage = extractErrorMessage(props.error)
+                logChatDebug('event-ingest', 'apply session.next.step.failed', {
+                    sessionId: sessionID,
+                    error: errorMessage,
+                })
+                reduceSessionError(sessionID, errorMessage, get, set)
+                return
+            }
+
+            case 'session.next.tool.failed': {
+                const sessionID = readSessionId(props)
+                const callID = typeof props.callID === 'string' ? props.callID : undefined
+                if (!sessionID || !callID) return
+                reduceToolCallStatusByCallId(
+                    sessionID,
+                    callID,
+                    {
+                        status: 'error',
+                        error: extractErrorMessage(props.error),
+                    },
+                    get,
+                    set,
+                )
+                return
+            }
+
+            case 'session.next.tool.success': {
+                const sessionID = readSessionId(props)
+                const callID = typeof props.callID === 'string' ? props.callID : undefined
+                if (!sessionID || !callID) return
+                reduceToolCallStatusByCallId(
+                    sessionID,
+                    callID,
+                    {
+                        status: 'completed',
+                        output: extractToolEventOutput(props),
+                        metadata: readRecord(props.provider)?.metadata as Record<string, unknown> | undefined,
+                    },
+                    get,
+                    set,
+                )
+                return
+            }
+
+            case 'session.next.shell.started': {
+                const sessionID = readSessionId(props)
+                const callID = typeof props.callID === 'string' ? props.callID : undefined
+                if (!sessionID || !callID) return
+                reduceToolCallStatusByCallId(
+                    sessionID,
+                    callID,
+                    {
+                        status: 'running',
+                        input: typeof props.command === 'string' ? { command: props.command } : undefined,
+                    },
+                    get,
+                    set,
+                )
+                return
+            }
+
+            case 'session.next.shell.ended': {
+                const sessionID = readSessionId(props)
+                const callID = typeof props.callID === 'string' ? props.callID : undefined
+                if (!sessionID || !callID) return
+                reduceToolCallStatusByCallId(
+                    sessionID,
+                    callID,
+                    {
+                        status: 'completed',
+                        output: typeof props.output === 'string' ? props.output : undefined,
+                    },
+                    get,
+                    set,
+                )
+                return
+            }
+
+            case 'session.next.retried': {
+                const sessionID = readSessionId(props)
+                if (!sessionID) return
+                const attempt = typeof props.attempt === 'number' ? props.attempt : undefined
+                const message = extractErrorMessage(props.error)
+                reduceSessionStatus(
+                    sessionID,
+                    { type: 'retry', attempt, message },
+                    get,
+                    set,
+                )
+                return
+            }
+
+            case 'session.next.compaction.ended': {
+                const sessionID = readSessionId(props)
+                if (!sessionID) return
+                logChatDebug('event-ingest', 'apply session.next.compaction.ended', { sessionId: sessionID })
+                onSessionCompacted?.(sessionID)
+                return
+            }
+
             case 'permission.asked': {
                 const request = props as unknown as PermissionRequest
                 const sessionId = readSessionId(request as Record<string, unknown> | undefined)
@@ -470,15 +574,67 @@ function extractErrorMessage(error: unknown): string {
     const dataRecord = errorRecord?.data && typeof errorRecord.data === 'object'
         ? errorRecord.data as Record<string, unknown>
         : null
+    const name = typeof errorRecord?.name === 'string' && errorRecord.name.trim()
+        ? errorRecord.name.trim()
+        : typeof errorRecord?.type === 'string' && errorRecord.type.trim()
+            ? errorRecord.type.trim()
+            : ''
     if (typeof dataRecord?.message === 'string' && dataRecord.message.trim()) {
-        return dataRecord.message.trim()
+        return appendErrorContext(dataRecord.message.trim(), dataRecord, name)
     }
     if (typeof errorRecord?.message === 'string' && errorRecord.message.trim()) {
-        return errorRecord.message.trim()
+        return appendErrorContext(errorRecord.message.trim(), dataRecord || errorRecord, name)
     }
     try {
         return `OpenCode session failed: ${JSON.stringify(error)}`
     } catch {
         return 'OpenCode session failed.'
     }
+}
+
+function appendErrorContext(message: string, record: Record<string, unknown> | null, name: string) {
+    const parts = [message]
+    const statusCode = typeof record?.statusCode === 'number' ? record.statusCode : null
+    const retryable = typeof record?.isRetryable === 'boolean' ? record.isRetryable : null
+    const label = [
+        name && name !== 'unknown' ? name : null,
+        statusCode ? `HTTP ${statusCode}` : null,
+        retryable === true ? 'retryable' : retryable === false ? 'not retryable' : null,
+    ].filter(Boolean).join(', ')
+    if (label) {
+        parts.push(`(${label})`)
+    }
+    return parts.join(' ')
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function extractToolEventOutput(props: Record<string, unknown>): string | undefined {
+    const content = props.content
+    if (Array.isArray(content)) {
+        const text = content
+            .map((entry) => {
+                const record = readRecord(entry)
+                if (!record) return ''
+                if (typeof record.text === 'string') return record.text
+                if (typeof record.uri === 'string') return record.uri
+                return ''
+            })
+            .filter(Boolean)
+            .join('\n')
+        if (text) return text
+    }
+
+    const structured = readRecord(props.structured)
+    if (structured && Object.keys(structured).length > 0) {
+        try {
+            return JSON.stringify(structured, null, 2)
+        } catch {
+            return String(structured)
+        }
+    }
+
+    return undefined
 }

@@ -35,6 +35,7 @@ export const api = {
     opencodeHealth: opencodeApi.health,
     opencodeRestart: opencodeApi.restart,
     opencodeApplyRuntimeReload: opencodeApi.applyRuntimeReload,
+    opencodeTerminal: opencodeApi.terminal,
 
     assets: {
         list: (kind: string) => fetchJSON<AssetListItem[]>(`/api/assets/${kind}`),

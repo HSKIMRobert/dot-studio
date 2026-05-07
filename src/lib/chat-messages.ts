@@ -1,5 +1,10 @@
 import type { ChatMessage, ChatMessagePart } from '../types'
 
+type SessionToolErrorLike = string | {
+    data?: { message?: string }
+    message?: string
+}
+
 type SessionPartLike = {
     id?: string
     type?: string
@@ -15,7 +20,7 @@ type SessionPartLike = {
         input?: Record<string, unknown>
         metadata?: Record<string, unknown>
         output?: string
-        error?: string
+        error?: SessionToolErrorLike
         time?: { start: number; end?: number }
     }
     reason?: string
@@ -155,8 +160,9 @@ function mapPartToChatMessagePart(part: SessionPartLike): ChatMessagePart | null
 
     if (part.type === 'tool') {
         const s = part.state || {}
-        const status = s.status === 'pending' || s.status === 'running' || s.status === 'completed' || s.status === 'error'
-            ? s.status
+        const rawStatus = s.status === 'failed' ? 'error' : s.status
+        const status = rawStatus === 'pending' || rawStatus === 'running' || rawStatus === 'completed' || rawStatus === 'error'
+            ? rawStatus
             : 'pending'
         return {
             id: part.id,
@@ -169,7 +175,7 @@ function mapPartToChatMessagePart(part: SessionPartLike): ChatMessagePart | null
                 input: s.input,
                 metadata: s.metadata,
                 output: s.output,
-                error: s.error,
+                error: formatToolError(s.error),
                 time: s.time,
             },
         }
@@ -198,6 +204,7 @@ function mapPartToChatMessagePart(part: SessionPartLike): ChatMessagePart | null
             compaction: {
                 auto: !!part.auto,
                 overflow: part.overflow,
+                summary: part.text,
             },
         }
     }
@@ -216,6 +223,33 @@ function stripInjectedContextFromUserMessage(text: string): string {
     const lastSeparatorIndex = text.lastIndexOf(PROMPT_SECTION_SEPARATOR)
     if (lastSeparatorIndex === -1) return text
     return text.slice(lastSeparatorIndex + PROMPT_SECTION_SEPARATOR.length)
+}
+
+function formatToolError(error: SessionToolErrorLike | undefined): string | undefined {
+    if (error === undefined || error === null) {
+        return undefined
+    }
+    if (typeof error === 'string') {
+        return error
+    }
+    if (typeof error === 'object') {
+        const record = error as Record<string, unknown>
+        const data = record.data && typeof record.data === 'object' ? record.data as Record<string, unknown> : null
+        const message = typeof data?.message === 'string' && data.message.trim()
+            ? data.message.trim()
+            : typeof record.message === 'string' && record.message.trim()
+                ? record.message.trim()
+                : null
+        if (message) {
+            return message
+        }
+        try {
+            return JSON.stringify(error)
+        } catch {
+            return 'Tool call failed.'
+        }
+    }
+    return String(error)
 }
 
 export function mapSessionMessageToChatMessage(message: SessionMessageLike): ChatMessage {

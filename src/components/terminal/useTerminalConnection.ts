@@ -181,6 +181,12 @@ export function useTerminalConnection(
                     case 'sessions':
                         setSessions(msg.sessions || [])
                         break
+                    case 'pty-reconnecting':
+                        xtermRef.current?.write('\r\n\x1b[33mTerminal connection lost. Reconnecting…\x1b[0m\r\n')
+                        break
+                    case 'pty-connected':
+                        xtermRef.current?.write('\r\n\x1b[32mTerminal reconnected.\x1b[0m\r\n')
+                        break
                     case 'exit': {
                         const exitedId = msg.id || activeId
                         setSessions(prev => prev.filter(s => s.id !== exitedId))

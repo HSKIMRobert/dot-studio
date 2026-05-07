@@ -312,6 +312,73 @@ describe('Event Ingest', () => {
         })
     })
 
+    describe('session.next events', () => {
+        it('marks a matching tool as failed from session.next.tool.failed', () => {
+            const ingest = createEventIngest({ get, set })
+
+            state.seMessages[SESSION_ID] = [
+                {
+                    id: 'msg-1',
+                    role: 'assistant',
+                    content: '',
+                    timestamp: 1000,
+                    parts: [{
+                        id: 'tool-1',
+                        type: 'tool',
+                        tool: {
+                            name: 'bash',
+                            callId: 'call-1',
+                            status: 'running',
+                        },
+                    }],
+                },
+            ]
+
+            ingest.enqueue({
+                type: 'session.next.tool.failed',
+                properties: {
+                    sessionID: SESSION_ID,
+                    callID: 'call-1',
+                    error: { type: 'unknown', message: 'command failed' },
+                },
+            })
+
+            ingest.flushSync()
+
+            expect(state.seMessages[SESSION_ID]?.[0]?.parts?.[0]).toMatchObject({
+                type: 'tool',
+                tool: {
+                    callId: 'call-1',
+                    status: 'error',
+                    error: 'command failed',
+                },
+            })
+
+            ingest.dispose()
+        })
+
+        it('turns session.next.step.failed into a normalized session error', () => {
+            const ingest = createEventIngest({ get, set })
+
+            ingest.enqueue({
+                type: 'session.next.step.failed',
+                properties: {
+                    sessionID: SESSION_ID,
+                    error: { type: 'unknown', message: 'model failed' },
+                },
+            })
+
+            ingest.flushSync()
+
+            expect(state.seStatuses[SESSION_ID]).toMatchObject({
+                type: 'error',
+                message: 'model failed',
+            })
+
+            ingest.dispose()
+        })
+    })
+
     describe('heartbeat timeout', () => {
         it('calls onHeartbeatTimeout when no events for 30s', () => {
             vi.useFakeTimers()

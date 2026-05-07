@@ -581,7 +581,6 @@ export async function importActFromAssetImpl(
     // CONTRACT_RULES: validate through canonical contract parser at import boundary
     const raw = asset as unknown as Record<string, unknown>
     const canonicalPayload = {
-        $schema: asset.schema || 'https://schemas.danceoftal.com/assets/act.v1.json',
         kind: 'act' as const,
         urn: asset.urn || `act/@local/${asset.name || 'untitled'}`,
         description: asset.description,

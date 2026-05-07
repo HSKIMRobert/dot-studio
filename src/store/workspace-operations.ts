@@ -30,6 +30,7 @@ import {
 } from './workspace-helpers'
 import { performerIdCounter, markdownEditorIdCounter } from './workspaceSlice'
 import { createEmptyProjectionDirtyState } from './runtime-change-policy'
+import { buildCanvasViewResetState } from './workspace-focus-actions'
 
 type SetFn = (partial: Partial<StudioState> | ((state: StudioState) => Partial<StudioState>)) => void
 type GetFn = () => StudioState
@@ -50,6 +51,64 @@ type PersistedWorkspaceSnapshot = SavedWorkspaceSnapshot & {
     markdownEditors: PersistedMarkdownEditor[]
     acts?: PersistedWorkspaceAct[]
     canvasTerminals?: PersistedCanvasTerminal[]
+}
+
+function snapshotRectMap(state: StudioState) {
+    const snapshot = state.focusSnapshot
+    const rects = new Map<string, { position: { x: number; y: number }; width: number; height: number }>()
+    if (!snapshot) return rects
+
+    for (const rect of snapshot.nodeRects || []) {
+        rects.set(`${rect.type}:${rect.nodeId}`, {
+            position: rect.nodePosition,
+            width: rect.nodeSize.width,
+            height: rect.nodeSize.height,
+        })
+    }
+
+    if (snapshot.nodePosition) {
+        rects.set(`${snapshot.type}:${snapshot.nodeId}`, {
+            position: snapshot.nodePosition,
+            width: snapshot.nodeSize.width,
+            height: snapshot.nodeSize.height,
+        })
+    }
+
+    return rects
+}
+
+function restoreTransientViewPerformers(state: StudioState) {
+    const snapshot = state.focusSnapshot
+    if (!snapshot) return state.performers
+    const rects = snapshotRectMap(state)
+
+    return state.performers.map((performer) => ({
+        ...performer,
+        ...(rects.get(`performer:${performer.id}`) || {}),
+        hidden: snapshot.hiddenPerformerIds.includes(performer.id),
+    }))
+}
+
+function restoreTransientViewActs(state: StudioState) {
+    const snapshot = state.focusSnapshot
+    if (!snapshot) return state.acts
+    const rects = snapshotRectMap(state)
+
+    return state.acts.map((act) => ({
+        ...act,
+        ...(rects.get(`act:${act.id}`) || {}),
+        hidden: snapshot.hiddenActIds.includes(act.id),
+    }))
+}
+
+function restoreTransientViewMarkdownEditors(state: StudioState) {
+    const snapshot = state.focusSnapshot
+    if (!snapshot) return state.markdownEditors
+
+    return state.markdownEditors.map((editor) => ({
+        ...editor,
+        hidden: snapshot.hiddenEditorIds.includes(editor.id),
+    }))
 }
 
 // ────────────────────────────────────────
@@ -86,7 +145,7 @@ export async function newWorkspace(get: GetFn, set: SetFn) {
                 selectedPerformerId: null,
                 selectedPerformerSessionId: null,
                 selectedMarkdownEditorId: null,
-                focusSnapshot: null,
+                ...buildCanvasViewResetState(),
                 inspectorFocus: null,
                 activeChatPerformerId: null,
                 assistantModel: null,
@@ -143,14 +202,16 @@ export async function newWorkspace(get: GetFn, set: SetFn) {
 
 export async function saveWorkspace(get: GetFn, set: SetFn) {
     const {
-        performers,
-        markdownEditors,
         chatKeyToSession,
         appliedAssistantActionMessageIds,
         assistantActionResults,
         workingDir,
     } = get()
     if (!workingDir) return
+    const state = get()
+    const performers = restoreTransientViewPerformers(state)
+    const markdownEditors = restoreTransientViewMarkdownEditors(state)
+    const acts = restoreTransientViewActs(state)
     const normalizedPerformers = performers.map((performer) => ({
         ...performer,
         declaredMcpConfig: performer.declaredMcpConfig || null,
@@ -174,7 +235,7 @@ export async function saveWorkspace(get: GetFn, set: SetFn) {
             sessionId: null,
             connected: false,
         })),
-        acts: get().acts,
+        acts,
     }
     const saved = await api.workspaces.save(snapshot)
     set({ workspaceDirty: false, workspaceId: saved.id })
@@ -291,7 +352,7 @@ export async function loadWorkspace(workspaceId: string, get: GetFn, set: SetFn)
             selectedPerformerId: null,
             selectedPerformerSessionId: null,
             selectedMarkdownEditorId: null,
-            focusSnapshot: null,
+            ...buildCanvasViewResetState(),
             inspectorFocus: null,
             activeChatPerformerId: null,
             chatPrefixes: {},

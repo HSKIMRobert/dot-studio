@@ -55,7 +55,6 @@ type PanelAssetSharedFields = {
     clientRegistrationRequired?: boolean
     draftId?: string
     draftContent?: unknown
-    schema?: string
     stars?: number
     tier?: string
     updatedAt?: string

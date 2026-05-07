@@ -153,6 +153,12 @@ export async function getFileStatus(directory: string) {
     return responseData(res, [])
 }
 
+export async function listTerminalShells(directory: string) {
+    const oc = await getOpencode()
+    const res = await oc.pty.shells({ directory })
+    return responseData(res, [])
+}
+
 export async function findTextInProject(directory: string, pattern: string) {
     const oc = await getOpencode()
     const res = await oc.find.text({ directory, pattern })

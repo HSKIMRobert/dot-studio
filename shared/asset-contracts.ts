@@ -63,7 +63,6 @@ type AssetListItemBase<K extends InstalledAssetKind> = {
     source?: Exclude<AssetSource, 'draft'>
     description?: string
     tags?: string[]
-    schema?: string
     content?: string
     stars?: number
     tier?: string
