@@ -52,10 +52,22 @@ import {
 } from './workspace-draft-actions'
 import {
     addCanvasTerminalImpl,
+    addSplitViewPaneImpl,
+    buildCanvasViewResetState,
     buildExitFocusModeState,
+    enterEmptyFullViewImpl,
+    enterEmptySplitViewImpl,
     enterFocusModeImpl,
+    enterSplitViewImpl,
     exitFocusModeImpl,
+    insertSplitViewPaneImpl,
+    moveSplitViewPaneImpl,
     removeCanvasTerminalImpl,
+    removeSplitViewPaneImpl,
+    replaceSplitViewPaneImpl,
+    resizeSplitViewBoundaryImpl,
+    setSplitViewActivePaneImpl,
+    setSplitViewColumnsImpl,
     setWorkingDirImpl,
     switchFocusTargetImpl,
     updateCanvasTerminalPositionImpl,
@@ -128,7 +140,7 @@ function buildClosedWorkspaceState(): Partial<StudioState> {
         activeThreadId: null,
         activeThreadParticipantKey: null,
         actThreads: {},
-        focusSnapshot: null,
+        ...buildCanvasViewResetState(),
         canvasRevealTarget: null,
         inspectorFocus: null,
         workspaceList: [],
@@ -171,7 +183,7 @@ export const createWorkspaceSlice: StateCreator<
     selectedPerformerId: null,
     selectedPerformerSessionId: null,
     selectedMarkdownEditorId: null,
-    focusSnapshot: null,
+    ...buildCanvasViewResetState(),
     canvasRevealTarget: null,
     inspectorFocus: null,
     workspaceList: [],
@@ -435,15 +447,36 @@ export const createWorkspaceSlice: StateCreator<
         selectedPerformerSessionId: null,
         selectedActId: id ? null : s.selectedActId,
         actEditorState: id ? null : s.actEditorState,
-        focusSnapshot: (id && s.focusSnapshot) ? null : s.focusSnapshot,
         inspectorFocus: null,
     })),
 
     enterFocusMode: (nodeId, nodeType, viewportSize) => enterFocusModeImpl(get, set, nodeId, nodeType, viewportSize),
 
+    enterEmptyFullView: () => enterEmptyFullViewImpl(get, set),
+
+    enterEmptySplitView: () => enterEmptySplitViewImpl(get, set),
+
     exitFocusMode: () => exitFocusModeImpl(get, set),
 
     switchFocusTarget: (nodeId, nodeType) => switchFocusTargetImpl(get, set, nodeId, nodeType),
+
+    enterSplitView: (nodeId, nodeType, viewportSize) => enterSplitViewImpl(get, set, nodeId, nodeType, viewportSize),
+
+    addSplitViewPane: (nodeId, nodeType, viewportSize) => addSplitViewPaneImpl(get, set, nodeId, nodeType, viewportSize),
+
+    insertSplitViewPane: (nodeId, nodeType, placement, viewportSize) => insertSplitViewPaneImpl(get, set, nodeId, nodeType, placement, viewportSize),
+
+    replaceSplitViewPane: (paneId, nodeId, nodeType, viewportSize) => replaceSplitViewPaneImpl(get, set, paneId, nodeId, nodeType, viewportSize),
+
+    moveSplitViewPane: (paneId, placement, viewportSize) => moveSplitViewPaneImpl(get, set, paneId, placement, viewportSize),
+
+    removeSplitViewPane: (paneId, viewportSize) => removeSplitViewPaneImpl(get, set, paneId, viewportSize),
+
+    setSplitViewActivePane: (nodeId, nodeType) => setSplitViewActivePaneImpl(get, set, nodeId, nodeType),
+
+    resizeSplitViewBoundary: (axis, rowIndex, boundaryIndex, deltaPx, viewportSize) => resizeSplitViewBoundaryImpl(get, set, axis, rowIndex, boundaryIndex, deltaPx, viewportSize),
+
+    setSplitViewColumns: (columns, viewportSize) => setSplitViewColumnsImpl(get, set, columns, viewportSize),
 
     revealCanvasNode: (nodeId, nodeType) => set((state) => ({
         canvasRevealTarget: {

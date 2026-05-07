@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useDraggable } from '@dnd-kit/core'
 import {
     Archive,
     Check,
@@ -62,6 +63,23 @@ export default function WorkspaceExplorerActGroup({
     const [showAllThreads, setShowAllThreads] = useState(false)
     const [renamingThreadId, setRenamingThreadId] = useState<string | null>(null)
     const [renameValue, setRenameValue] = useState('')
+    const viewMode = useStudioStore((s) => s.viewMode)
+    const dragDisabled = viewMode === 'full'
+    const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+        id: `workspace-node:act:${act.id}`,
+        disabled: dragDisabled,
+        data: {
+            kind: 'act',
+            source: 'workspace-node',
+            nodeId: act.id,
+            nodeType: 'act',
+            label: act.name,
+            name: act.name,
+        },
+    })
+    const rowAccessibilityProps = dragDisabled
+        ? { role: 'button' as const, tabIndex: 0 }
+        : attributes
     const THREAD_LIMIT = 5
     const visibleThreads = showAllThreads ? threads : threads.slice(0, THREAD_LIMIT)
     const hiddenThreadCount = threads.length - THREAD_LIMIT
@@ -75,13 +93,16 @@ export default function WorkspaceExplorerActGroup({
     return (
         <div className="thread-group">
             <div
-                role="button"
-                tabIndex={0}
+                ref={setNodeRef}
+                {...rowAccessibilityProps}
                 className={[
                     'thread-card',
+                    dragDisabled ? '' : 'thread-card--draggable',
                     isActSelected ? 'active' : '',
                     act.hidden ? 'muted' : '',
+                    isDragging ? 'is-dragging' : '',
                 ].filter(Boolean).join(' ')}
+                {...(dragDisabled ? {} : listeners)}
                 onClick={() => onOpenAct(act.id)}
                 onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
@@ -92,6 +113,7 @@ export default function WorkspaceExplorerActGroup({
             >
                 <span
                     className={`thread-card__chevron ${expanded ? 'is-open' : ''}`}
+                    onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                         event.stopPropagation()
                         onToggleExpanded(actKey)
@@ -109,7 +131,11 @@ export default function WorkspaceExplorerActGroup({
                     </span>
                 </span>
                 {/* Actions — same order as PerformerGroup: [Eye, +Thread, Archive, Trash] */}
-                <span className="thread-card__actions" onClick={(event) => event.stopPropagation()}>
+                <span
+                    className="thread-card__actions"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                >
                     {pendingDelete === actKey ? (
                         <>
                             <span className="thread-card__delete-label">Delete?</span>

@@ -21,9 +21,19 @@ import type { ProjectionDirtyState, RuntimeChangeClass, StudioChangeDescriptor }
 
 export type PerformerRelationSlice = Record<never, never>
 
+export type WorkspaceViewMode = 'canvas' | 'full' | 'split'
+export type FullscreenNodeType = 'performer' | 'act'
+
+export interface FullscreenNodeRect {
+    nodeId: string
+    type: FullscreenNodeType
+    nodePosition: { x: number; y: number }
+    nodeSize: { width: number; height: number }
+}
+
 export interface FocusSnapshot {
     nodeId: string
-    type: 'performer' | 'act'
+    type: FullscreenNodeType
     actId?: string
     nodePosition?: { x: number; y: number }
     hiddenPerformerIds: string[]
@@ -31,15 +41,37 @@ export interface FocusSnapshot {
     hiddenEditorIds: string[]
     hiddenTerminalIds: string[]
     nodeSize: { width: number; height: number }
+    nodeRects?: FullscreenNodeRect[]
     assetLibraryOpen: boolean
     assistantOpen: boolean
     trackingOpen: boolean
     terminalOpen: boolean
 }
 
+export interface SplitViewPane {
+    paneId: string
+    nodeId: string
+    type: FullscreenNodeType
+}
+
+export interface SplitViewState {
+    panes: SplitViewPane[]
+    activePaneId: string | null
+    rows: string[][]
+    rowWeights: number[]
+    columnWeights: number[][]
+    columns: number
+}
+
+export interface SplitViewPlacement {
+    rowIndex: number
+    columnIndex: number
+    rowMode?: 'existing' | 'new'
+}
+
 export interface CanvasRevealTarget {
     id: string
-    type: 'performer' | 'act'
+    type: FullscreenNodeType
     nonce: number
 }
 
@@ -52,6 +84,8 @@ export interface WorkspaceSlice {
     selectedPerformerId: string | null
     selectedPerformerSessionId: string | null
     selectedMarkdownEditorId: string | null
+    viewMode: WorkspaceViewMode
+    splitView: SplitViewState
     focusSnapshot: FocusSnapshot | null
     canvasRevealTarget: CanvasRevealTarget | null
     inspectorFocus: string | null
@@ -103,10 +137,27 @@ export interface WorkspaceSlice {
     selectPerformer: (id: string | null) => void
     selectPerformerSession: (sessionId: string | null) => void
     selectMarkdownEditor: (id: string | null) => void
-    enterFocusMode: (nodeId: string, nodeType: 'performer' | 'act', viewportSize: { width: number; height: number }) => void
+    enterFocusMode: (nodeId: string, nodeType: FullscreenNodeType, viewportSize: { width: number; height: number }) => void
+    enterEmptyFullView: () => void
+    enterEmptySplitView: () => void
     exitFocusMode: () => void
-    switchFocusTarget: (nodeId: string, nodeType: 'performer' | 'act') => void
-    revealCanvasNode: (nodeId: string, nodeType: 'performer' | 'act') => void
+    switchFocusTarget: (nodeId: string, nodeType: FullscreenNodeType) => void
+    enterSplitView: (nodeId?: string, nodeType?: FullscreenNodeType, viewportSize?: { width: number; height: number }) => void
+    addSplitViewPane: (nodeId: string, nodeType: FullscreenNodeType, viewportSize?: { width: number; height: number }) => void
+    insertSplitViewPane: (nodeId: string, nodeType: FullscreenNodeType, placement: number | SplitViewPlacement, viewportSize?: { width: number; height: number }) => void
+    replaceSplitViewPane: (paneId: string, nodeId: string, nodeType: FullscreenNodeType, viewportSize?: { width: number; height: number }) => void
+    moveSplitViewPane: (paneId: string, placement: number | SplitViewPlacement, viewportSize?: { width: number; height: number }) => void
+    removeSplitViewPane: (paneId: string, viewportSize?: { width: number; height: number }) => void
+    setSplitViewActivePane: (nodeId: string, nodeType: FullscreenNodeType) => void
+    resizeSplitViewBoundary: (
+        axis: 'row' | 'column',
+        rowIndex: number,
+        boundaryIndex: number,
+        deltaPx: number,
+        viewportSize?: { width: number; height: number },
+    ) => void
+    setSplitViewColumns: (columns: number, viewportSize?: { width: number; height: number }) => void
+    revealCanvasNode: (nodeId: string, nodeType: FullscreenNodeType) => void
     exitActLayoutMode: () => void
     setInspectorFocus: (focus: string | null) => void
     openPerformerEditor: (id: string, focus?: string | null) => void

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo } from 'react'
 import { useNodesState } from '@xyflow/react'
 import type { Node } from '@xyflow/react'
 import type { WorkspaceSlice } from '../../store/types'
+import type { WorkspaceViewMode } from '../../store/types'
 import type {
     CanvasTerminalNode,
     DraftAsset,
@@ -32,6 +33,7 @@ type UseCanvasPresentationArgs = {
     selectedPerformerId: string | null
     selectedMarkdownEditorId: string | null
     focusedPerformerId: string | null
+    viewMode: WorkspaceViewMode
     editingTarget: WorkspaceSlice['editingTarget']
     transformTarget: { id: string; type: CanvasNodeKind } | null
     performerMcpSummary: (performer: PerformerNode) => string | null
@@ -55,6 +57,7 @@ export function useCanvasPresentation(args: UseCanvasPresentationArgs) {
         selectedPerformerId,
         selectedMarkdownEditorId,
         focusedPerformerId,
+        viewMode,
         editingTarget,
         transformTarget,
         performerMcpSummary,
@@ -144,10 +147,11 @@ export function useCanvasPresentation(args: UseCanvasPresentationArgs) {
     ])
 
     useEffect(() => {
+        const isCanvasMode = viewMode === 'canvas'
         setNodes(composeCanvasNodes({
             performerNodes: buildPerformerNodes(),
-            markdownEditorNodes: buildMarkdownEditorNodes(),
-            canvasTerminalNodes: buildCanvasTerminalNodes(),
+            markdownEditorNodes: isCanvasMode ? buildMarkdownEditorNodes() : [],
+            canvasTerminalNodes: isCanvasMode ? buildCanvasTerminalNodes() : [],
             actNodes: buildActNodes(),
         }))
     }, [
@@ -155,12 +159,13 @@ export function useCanvasPresentation(args: UseCanvasPresentationArgs) {
         buildMarkdownEditorNodes,
         buildCanvasTerminalNodes,
         buildActNodes,
+        viewMode,
         setNodes,
     ])
 
     const edges = useMemo(
-        () => composeCanvasEdges(acts, editingActId, performers),
-        [acts, editingActId, performers],
+        () => viewMode === 'canvas' ? composeCanvasEdges(acts, editingActId, performers) : [],
+        [acts, editingActId, performers, viewMode],
     )
 
     return {

@@ -138,6 +138,7 @@ export function useCanvasFlowHandlers(args: UseCanvasFlowHandlersArgs) {
                 selectPerformer(null)
                 selectMarkdownEditor(null)
                 selectAct(result.id)
+                useStudioStore.getState().setSplitViewActivePane(result.id, 'act')
                 return
             case 'performer':
                 if (editingActId) {
@@ -152,6 +153,7 @@ export function useCanvasFlowHandlers(args: UseCanvasFlowHandlersArgs) {
                 closeActEditor()
                 selectPerformer(result.id)
                 setActiveChatPerformer(result.id)
+                useStudioStore.getState().setSplitViewActivePane(result.id, 'performer')
                 return
         }
     }, [

@@ -22,9 +22,12 @@ import {
     workspaceShortPath,
 } from './workspace-explorer-utils';
 import {
+    getCanvasViewportSize,
     resolveNodeBaselineHidden,
+    SPLIT_VIEW_MAX_PANES,
     setFocusSnapshotNodeHidden,
 } from '../../lib/focus-utils';
+import type { FocusSnapshot, FullscreenNodeType, WorkspaceViewMode } from '../../store/types';
 import type { ExplorerRenamingSession } from './workspace-explorer-utils';
 import WorkspaceExplorerWorkspacesSection from './WorkspaceExplorerWorkspacesSection';
 import WorkspaceExplorerThreadsSection from './WorkspaceExplorerThreadsSection';
@@ -316,7 +319,60 @@ export default function WorkspaceExplorer() {
     }, [cancelRenameSession, listSessions, renamingSession]);
 
     const switchFocusTarget = useStudioStore((s) => s.switchFocusTarget);
+    const addSplitViewPane = useStudioStore((s) => s.addSplitViewPane);
+    const replaceSplitViewPane = useStudioStore((s) => s.replaceSplitViewPane);
+    const setSplitViewActivePane = useStudioStore((s) => s.setSplitViewActivePane);
     const revealCanvasNode = useStudioStore((s) => s.revealCanvasNode);
+
+    const openWorkspaceNodeInCurrentView = useCallback((
+        nodeId: string,
+        nodeType: FullscreenNodeType,
+        currentFocusSnapshot: FocusSnapshot | null,
+        currentViewMode: WorkspaceViewMode,
+    ) => {
+        if (currentViewMode === 'split') {
+            const state = useStudioStore.getState();
+            const openPane = state.splitView.panes.find((pane) => pane.nodeId === nodeId && pane.type === nodeType);
+            if (openPane) {
+                setSplitViewActivePane(nodeId, nodeType);
+                return;
+            }
+
+            if (state.splitView.panes.length >= SPLIT_VIEW_MAX_PANES) {
+                const replacementPane = state.splitView.panes.find((pane) => pane.paneId === state.splitView.activePaneId)
+                    || state.splitView.panes[0];
+                if (replacementPane) {
+                    replaceSplitViewPane(replacementPane.paneId, nodeId, nodeType, getCanvasViewportSize());
+                    return;
+                }
+            }
+
+            addSplitViewPane(nodeId, nodeType, getCanvasViewportSize());
+            return;
+        }
+
+        if (currentViewMode === 'full' && !currentFocusSnapshot) {
+            useStudioStore.getState().enterFocusMode(nodeId, nodeType, getCanvasViewportSize());
+            return;
+        }
+
+        const shouldSwitchFocus = Boolean(currentFocusSnapshot && (
+            currentFocusSnapshot.nodeId !== nodeId
+            || currentFocusSnapshot.type !== nodeType
+        ));
+
+        if (shouldSwitchFocus) {
+            switchFocusTarget(nodeId, nodeType);
+            return;
+        }
+
+        if (nodeType === 'performer') {
+            selectPerformer(nodeId);
+            return;
+        }
+
+        selectAct(nodeId);
+    }, [addSplitViewPane, replaceSplitViewPane, selectAct, selectPerformer, setSplitViewActivePane, switchFocusTarget]);
 
     const ensurePerformerVisible = useCallback((performerId: string) => {
         const state = useStudioStore.getState();
@@ -367,21 +423,14 @@ export default function WorkspaceExplorer() {
     const openPerformer = (performerId: string) => {
         const {
             focusSnapshot: currentFocusSnapshot,
+            viewMode: currentViewMode,
         } = useStudioStore.getState();
 
         ensurePerformerVisible(performerId);
 
         closeEditor();
         selectPerformerSession(null);
-        const shouldSwitchFocus = currentFocusSnapshot && (
-            currentFocusSnapshot.nodeId !== performerId
-            || currentFocusSnapshot.type !== 'performer'
-        )
-        if (shouldSwitchFocus) {
-            switchFocusTarget(performerId, 'performer');
-        } else {
-            selectPerformer(performerId);
-        }
+        openWorkspaceNodeInCurrentView(performerId, 'performer', currentFocusSnapshot, currentViewMode);
         setActiveChatPerformer(performerId);
         revealCanvasNode(performerId, 'performer');
     };
@@ -404,18 +453,11 @@ export default function WorkspaceExplorer() {
         }
         const {
             focusSnapshot: currentFocusSnapshot,
+            viewMode: currentViewMode,
         } = useStudioStore.getState();
         ensurePerformerVisible(performerId);
         closeEditor();
-        const shouldSwitchFocus = currentFocusSnapshot && (
-            currentFocusSnapshot.nodeId !== performerId
-            || currentFocusSnapshot.type !== 'performer'
-        )
-        if (shouldSwitchFocus) {
-            switchFocusTarget(performerId, 'performer');
-        } else {
-            selectPerformer(performerId);
-        }
+        openWorkspaceNodeInCurrentView(performerId, 'performer', currentFocusSnapshot, currentViewMode);
         selectPerformerSession(session.id);
         setActiveChatPerformer(performerId);
         revealCanvasNode(performerId, 'performer');
@@ -424,43 +466,29 @@ export default function WorkspaceExplorer() {
     const openAct = useCallback((actId: string) => {
         const {
             focusSnapshot: currentFocusSnapshot,
+            viewMode: currentViewMode,
         } = useStudioStore.getState();
 
         ensureActVisible(actId);
 
         closeEditor();
-        const shouldSwitchFocus = currentFocusSnapshot && (
-            currentFocusSnapshot.nodeId !== actId
-            || currentFocusSnapshot.type !== 'act'
-        )
-        if (shouldSwitchFocus) {
-            switchFocusTarget(actId, 'act');
-        } else {
-            selectAct(actId);
-        }
+        openWorkspaceNodeInCurrentView(actId, 'act', currentFocusSnapshot, currentViewMode);
         revealCanvasNode(actId, 'act');
-    }, [closeEditor, ensureActVisible, revealCanvasNode, selectAct, switchFocusTarget]);
+    }, [closeEditor, ensureActVisible, openWorkspaceNodeInCurrentView, revealCanvasNode]);
 
     const openActThread = useCallback((actId: string, threadId: string) => {
         const {
             focusSnapshot: currentFocusSnapshot,
+            viewMode: currentViewMode,
         } = useStudioStore.getState();
 
         ensureActVisible(actId);
 
         closeEditor();
-        const shouldSwitchFocus = currentFocusSnapshot && (
-            currentFocusSnapshot.nodeId !== actId
-            || currentFocusSnapshot.type !== 'act'
-        );
-        if (shouldSwitchFocus) {
-            switchFocusTarget(actId, 'act');
-        } else {
-            selectAct(actId);
-        }
+        openWorkspaceNodeInCurrentView(actId, 'act', currentFocusSnapshot, currentViewMode);
         selectThread(actId, threadId);
         revealCanvasNode(actId, 'act');
-    }, [closeEditor, ensureActVisible, revealCanvasNode, selectAct, selectThread, switchFocusTarget]);
+    }, [closeEditor, ensureActVisible, openWorkspaceNodeInCurrentView, revealCanvasNode, selectThread]);
 
     return (
         <div className="explorer explorer--stacked">

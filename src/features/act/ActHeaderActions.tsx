@@ -4,9 +4,11 @@ import './ActHeaderActions.css'
 
 type ActHeaderActionsProps = {
     focused: boolean
+    splitPane?: boolean
     editing: boolean
     readiness?: ActReadinessResult
     onToggleFocus: () => void
+    onRemoveSplitPane?: () => void
     onToggleEdit: () => void
     onHide: () => void
 }
@@ -30,31 +32,48 @@ function readinessTitle(readiness?: ActReadinessResult): string {
 
 export default function ActHeaderActions({
     focused,
+    splitPane = false,
     editing,
     readiness,
     onToggleFocus,
+    onRemoveSplitPane,
     onToggleEdit,
     onHide,
 }: ActHeaderActionsProps) {
+    const fullscreenSurface = focused || splitPane
+
     return (
         <div className="act-frame__header-actions">
-            {!focused && readiness && (
+            {!fullscreenSurface && readiness && (
                 <span
                     className={`act-frame__readiness-dot ${readinessBadgeClass(readiness)}`}
                     title={readinessTitle(readiness)}
                 />
             )}
-            <button
-                className={`icon-btn act-frame__focus-btn ${focused ? 'active' : ''}`}
-                title={focused ? 'Exit focus mode' : 'Focus mode'}
-                onClick={(event) => {
-                    event.stopPropagation()
-                    onToggleFocus()
-                }}
-            >
-                {focused ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
-            </button>
-            {!focused && (
+            {splitPane ? (
+                <button
+                    className="icon-btn act-frame__focus-btn"
+                    title="Remove from Split View"
+                    onClick={(event) => {
+                        event.stopPropagation()
+                        onRemoveSplitPane?.()
+                    }}
+                >
+                    <X size={11} />
+                </button>
+            ) : (
+                <button
+                    className={`icon-btn act-frame__focus-btn ${focused ? 'active' : ''}`}
+                    title={focused ? 'Exit focus mode' : 'Focus mode'}
+                    onClick={(event) => {
+                        event.stopPropagation()
+                        onToggleFocus()
+                    }}
+                >
+                    {focused ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
+                </button>
+            )}
+            {!fullscreenSurface && (
                 <>
                     <button
                         className={`icon-btn act-frame__edit-btn ${editing ? 'active' : ''}`}

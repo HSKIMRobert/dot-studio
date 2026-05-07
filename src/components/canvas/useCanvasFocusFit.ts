@@ -7,16 +7,18 @@ import {
     revealCanvasNodeWithoutZoom,
     syncFocusViewport,
 } from '../../lib/focus-utils'
-import type { CanvasRevealTarget, FocusSnapshot } from '../../store/types'
+import type { CanvasRevealTarget, FocusSnapshot, WorkspaceViewMode } from '../../store/types'
 
 export function useCanvasFocusFit(args: {
     focusSnapshot: FocusSnapshot | null
     canvasRevealTarget: CanvasRevealTarget | null
     reactFlowInstance: ReactFlowInstance<Node> | null
     nodeCount: number
+    viewMode: WorkspaceViewMode
 }) {
-    const { focusSnapshot, canvasRevealTarget, reactFlowInstance, nodeCount } = args
+    const { focusSnapshot, canvasRevealTarget, reactFlowInstance, nodeCount, viewMode } = args
     const wasFocusActiveRef = useRef(false)
+    const previousViewModeRef = useRef<WorkspaceViewMode>(viewMode)
 
     useEffect(() => {
         if (!reactFlowInstance) {
@@ -27,6 +29,7 @@ export function useCanvasFocusFit(args: {
         const isFocusActive = !!focusSnapshot
         const focusNodeId = resolveFocusNodeId(focusSnapshot)
         const wasFocusActive = wasFocusActiveRef.current
+        const previousViewMode = previousViewModeRef.current
 
         const timer = window.setTimeout(() => {
             if (isFocusActive && focusNodeId) {
@@ -35,7 +38,10 @@ export function useCanvasFocusFit(args: {
             }
 
             if (wasFocusActive) {
-                reactFlowInstance.fitView(FOCUS_EXIT_FIT)
+                reactFlowInstance.fitView({
+                    ...FOCUS_EXIT_FIT,
+                    duration: previousViewMode === 'full' ? 0 : FOCUS_EXIT_FIT.duration,
+                })
                 return
             }
 
@@ -45,9 +51,10 @@ export function useCanvasFocusFit(args: {
         }, FOCUS_VIEWPORT_SYNC_DELAY)
 
         wasFocusActiveRef.current = isFocusActive
+        previousViewModeRef.current = viewMode
 
         return () => {
             window.clearTimeout(timer)
         }
-    }, [focusSnapshot, canvasRevealTarget?.id, canvasRevealTarget?.nonce, reactFlowInstance, nodeCount])
+    }, [focusSnapshot, canvasRevealTarget?.id, canvasRevealTarget?.nonce, reactFlowInstance, nodeCount, viewMode])
 }

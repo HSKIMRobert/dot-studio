@@ -1,4 +1,4 @@
-import { Suspense, lazy, useCallback, useEffect, useRef, useState } from 'react';
+import { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import { ReactFlow, Background, ConnectionMode } from '@xyflow/react';
 import type { Node, NodeTypes, ReactFlowInstance } from '@xyflow/react';
@@ -8,7 +8,6 @@ import '@xyflow/react/dist/style.css';
 import { useStudioStore } from '../../store';
 import { resolvePerformerRuntimeConfig } from '../../lib/performers';
 import { usePreventBrowserZoom } from '../../hooks/usePreventBrowserZoom';
-import CanvasControls from './CanvasControls';
 import CanvasDropOverlay from './CanvasDropOverlay';
 import { getCanvasDropLabel } from './canvas-drop-label';
 import { useCanvasFlowHandlers } from './useCanvasFlowHandlers';
@@ -16,10 +15,13 @@ import { useCanvasTransformTarget } from './useCanvasTransformTarget';
 import { useCanvasFocusFit } from './useCanvasFocusFit';
 import { useCanvasPresentation } from './useCanvasPresentation';
 import { resolveFocusNodeId, syncFocusViewport } from '../../lib/focus-utils';
-import { buildSyncFocusViewportState } from '../../store/workspace-focus-actions';
+import { buildSyncFullscreenViewportState } from '../../store/workspace-focus-actions';
+import { isSplitViewNodeDrag } from '../../lib/dnd-handlers';
 import OffsetBezierEdge from './OffsetBezierEdge';
+import StudioViewHeader from './StudioViewHeader';
+import SplitViewDropOverlay from './SplitViewDropOverlay';
+import SplitViewResizeOverlay from './SplitViewResizeOverlay';
 
-const WorkspaceToolbar = lazy(() => import('../toolbar/WorkspaceToolbar'));
 const AgentFrame = lazy(() =>
     import('../../features/performer').then((module) => ({ default: module.AgentFrame })),
 );
@@ -52,6 +54,8 @@ export default function CanvasArea() {
         drafts,
         workingDir,
         focusSnapshot,
+        viewMode,
+        splitView,
         canvasRevealTarget,
         selectedMarkdownEditorId,
         editingTarget,
@@ -87,6 +91,8 @@ export default function CanvasArea() {
         drafts: state.drafts,
         workingDir: state.workingDir,
         focusSnapshot: state.focusSnapshot,
+        viewMode: state.viewMode,
+        splitView: state.splitView,
         canvasRevealTarget: state.canvasRevealTarget,
         selectedMarkdownEditorId: state.selectedMarkdownEditorId,
         editingTarget: state.editingTarget,
@@ -116,21 +122,36 @@ export default function CanvasArea() {
         attachPerformerToAct: state.attachPerformerToAct,
         addRelation: state.addRelation,
     })));
-    const focusedPerformerId = focusSnapshot?.type === 'performer' ? focusSnapshot.nodeId : null;
+    const isFullscreenActive = viewMode !== 'canvas';
+    const focusedPerformerId = viewMode === 'full' && focusSnapshot?.type === 'performer' ? focusSnapshot.nodeId : null;
+    const showFullEmptyState = viewMode === 'full' && !focusSnapshot;
+    const showSplitEmptyState = viewMode === 'split' && splitView.panes.length === 0;
+    const splitLayoutKey = useMemo(() => JSON.stringify({
+        panes: splitView.panes.map((pane) => pane.paneId),
+        rows: splitView.rows,
+        rowWeights: splitView.rowWeights,
+        columnWeights: splitView.columnWeights,
+    }), [splitView.columnWeights, splitView.panes, splitView.rowWeights, splitView.rows]);
     const [reactFlowInstance, setReactFlowInstance] = useState<ReactFlowInstance<Node> | null>(null);
+    const [flowViewportSize, setFlowViewportSize] = useState<{ width: number; height: number } | null>(null);
     const { active, isOver: isCanvasDropOver, setNodeRef: setCanvasDropRef } = useDroppable({
         id: 'canvas-root-dropzone',
         data: {
             type: 'canvas-root',
         },
     });
+    const isSplitViewNodeDragging = isSplitViewNodeDrag(active?.data?.current as Parameters<typeof isSplitViewNodeDrag>[0]);
 
     // Prevent Ctrl+wheel / pinch-to-zoom from zooming the browser viewport.
     // Only the canvas should respond to zoom gestures.
     const canvasAreaRef = useRef<HTMLDivElement | null>(null);
+    const flowShellRef = useRef<HTMLDivElement | null>(null);
     usePreventBrowserZoom(canvasAreaRef);
-    const setCanvasRefs = useCallback((node: HTMLDivElement | null) => {
+    const setCanvasAreaRef = useCallback((node: HTMLDivElement | null) => {
         canvasAreaRef.current = node;
+    }, []);
+    const setFlowShellRefs = useCallback((node: HTMLDivElement | null) => {
+        flowShellRef.current = node;
         setCanvasDropRef(node);
     }, [setCanvasDropRef]);
 
@@ -166,6 +187,7 @@ export default function CanvasArea() {
         selectedPerformerId,
         selectedMarkdownEditorId,
         focusedPerformerId,
+        viewMode,
         editingTarget,
         transformTarget,
         performerMcpSummary,
@@ -181,10 +203,11 @@ export default function CanvasArea() {
         canvasRevealTarget,
         reactFlowInstance,
         nodeCount: nodes.length,
+        viewMode,
     })
 
     useEffect(() => {
-        if (!focusSnapshot || !canvasAreaRef.current) {
+        if (!focusSnapshot || !flowShellRef.current) {
             return
         }
 
@@ -193,7 +216,7 @@ export default function CanvasArea() {
             return
         }
 
-        const canvasElement = canvasAreaRef.current
+        const canvasElement = flowShellRef.current
         let frameId = 0
 
         const syncFocusedNodeSize = () => {
@@ -206,7 +229,7 @@ export default function CanvasArea() {
             }
 
             useStudioStore.setState((state) => {
-                const patch = buildSyncFocusViewportState(state, { width, height })
+                const patch = buildSyncFullscreenViewportState(state, { width, height })
                 return patch || {}
             })
 
@@ -232,7 +255,7 @@ export default function CanvasArea() {
             }
             observer.disconnect()
         }
-    }, [focusSnapshot, reactFlowInstance])
+    }, [focusSnapshot, reactFlowInstance, splitLayoutKey, viewMode])
 
     const {
         onEdgeClick,
@@ -248,7 +271,7 @@ export default function CanvasArea() {
         editingActId: actEditorState?.actId || null,
         editingTarget,
         reactFlowInstance,
-        canvasAreaRef,
+        canvasAreaRef: flowShellRef,
         transformTarget,
         clearTransformTarget,
         closeEditor,
@@ -274,7 +297,7 @@ export default function CanvasArea() {
     })
 
     useEffect(() => {
-        if (!reactFlowInstance || !canvasAreaRef.current) {
+        if (!reactFlowInstance || !flowShellRef.current) {
             return
         }
 
@@ -292,7 +315,7 @@ export default function CanvasArea() {
                 syncCanvasCenter()
             })
         })
-        observer.observe(canvasAreaRef.current)
+        observer.observe(flowShellRef.current)
 
         return () => {
             if (frameId) {
@@ -302,50 +325,91 @@ export default function CanvasArea() {
         }
     }, [reactFlowInstance, nodes.length, syncCanvasCenter])
 
+    useEffect(() => {
+        const element = flowShellRef.current
+        if (!element) {
+            return
+        }
+
+        const syncSize = () => {
+            setFlowViewportSize({
+                width: Math.round(element.clientWidth),
+                height: Math.round(element.clientHeight),
+            })
+        }
+
+        syncSize()
+        const observer = new ResizeObserver(syncSize)
+        observer.observe(element)
+
+        return () => {
+            observer.disconnect()
+        }
+    }, [])
+
     const canvasDropLabel = getCanvasDropLabel(active?.data?.current?.kind)
 
-    const isFocusActive = !!focusSnapshot
-
     return (
-        <div className={`canvas-area ${isFocusActive ? 'canvas-area--focus' : ''}`} ref={setCanvasRefs}>
-            <div className="canvas-top-right-bar">
-                <CanvasControls />
-                {!isFocusActive && (
-                    <Suspense fallback={null}>
-                        <WorkspaceToolbar />
-                    </Suspense>
-                )}
+        <div className={`canvas-area ${isFullscreenActive ? 'canvas-area--focus' : ''}`} ref={setCanvasAreaRef}>
+            <StudioViewHeader />
+            <div className="canvas-flow-shell" ref={setFlowShellRefs}>
+                {showFullEmptyState ? (
+                    <div className="canvas-fullscreen-empty-state">
+                        <div className="canvas-fullscreen-empty-state__copy">
+                            Select an ACT or Performer from the left sidebar
+                        </div>
+                    </div>
+                ) : null}
+                {showSplitEmptyState ? (
+                    <div className="canvas-fullscreen-empty-state">
+                        <div className="canvas-fullscreen-empty-state__copy">
+                            Drag an ACT or Performer here from the left sidebar
+                        </div>
+                    </div>
+                ) : null}
+                <CanvasDropOverlay active={isCanvasDropOver && !isSplitViewNodeDragging} label={canvasDropLabel} />
+                <SplitViewDropOverlay
+                    active={active}
+                    viewMode={viewMode}
+                    splitView={splitView}
+                    viewportSize={flowViewportSize}
+                    acts={acts}
+                    performers={performers}
+                />
+                <SplitViewResizeOverlay
+                    viewMode={viewMode}
+                    splitView={splitView}
+                    viewportSize={flowViewportSize}
+                />
+                <ReactFlow
+                    nodes={nodes}
+                    edges={relationEdges}
+                    onInit={setReactFlowInstance}
+                    onNodesChange={handleNodesChange}
+                    onNodeDragStop={onNodeDragStop}
+                    onNodeClick={onNodeClick}
+                    onConnect={onConnect}
+                    isValidConnection={() => true}
+                    connectionMode={ConnectionMode.Loose}
+                    onEdgeClick={onEdgeClick}
+                    onPaneClick={onPaneClick}
+                    onMoveEnd={onMoveEnd}
+                    nodeTypes={nodeTypes}
+                    edgeTypes={edgeTypes}
+                    multiSelectionKeyCode={null}
+                    selectionKeyCode={null}
+                    proOptions={{ hideAttribution: true }}
+                    fitView
+                    fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
+                    panOnDrag={!isFullscreenActive}
+                    zoomOnScroll={!isFullscreenActive}
+                    zoomOnPinch={!isFullscreenActive}
+                    zoomOnDoubleClick={!isFullscreenActive}
+                    nodesDraggable={!isFullscreenActive}
+                >
+                    <Background color={isFullscreenActive ? 'transparent' : 'var(--border-strong)'} gap={16} size={1} />
+                </ReactFlow>
             </div>
-
-            <CanvasDropOverlay active={isCanvasDropOver} label={canvasDropLabel} />
-            <ReactFlow
-                nodes={nodes}
-                edges={relationEdges}
-                onInit={setReactFlowInstance}
-                onNodesChange={handleNodesChange}
-                onNodeDragStop={onNodeDragStop}
-                onNodeClick={onNodeClick}
-                onConnect={onConnect}
-                isValidConnection={() => true}
-                connectionMode={ConnectionMode.Loose}
-                onEdgeClick={onEdgeClick}
-                onPaneClick={onPaneClick}
-                onMoveEnd={onMoveEnd}
-                nodeTypes={nodeTypes}
-                edgeTypes={edgeTypes}
-                multiSelectionKeyCode={null}
-                selectionKeyCode={null}
-                proOptions={{ hideAttribution: true }}
-                fitView
-                fitViewOptions={{ maxZoom: 1, padding: 0.2 }}
-                panOnDrag={!isFocusActive}
-                zoomOnScroll={!isFocusActive}
-                zoomOnPinch={!isFocusActive}
-                zoomOnDoubleClick={!isFocusActive}
-                nodesDraggable={!isFocusActive}
-            >
-                <Background color={isFocusActive ? 'transparent' : 'var(--border-strong)'} gap={16} size={1} />
-            </ReactFlow>
         </div>
     );
 }

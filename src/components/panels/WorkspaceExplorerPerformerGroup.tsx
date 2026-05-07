@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useDraggable } from '@dnd-kit/core'
 import {
     Archive,
     Check,
@@ -12,6 +13,7 @@ import {
     X,
 } from 'lucide-react'
 import { showToast } from '../../lib/toast'
+import { useStudioStore } from '../../store'
 import {
     LayerRow,
     SessionNameEditor,
@@ -70,6 +72,23 @@ export default function WorkspaceExplorerPerformerGroup({
 }: Props) {
     const rowKey = `performer-${row.id}`
     const [showAll, setShowAll] = useState(false)
+    const viewMode = useStudioStore((s) => s.viewMode)
+    const dragDisabled = viewMode === 'full'
+    const { attributes, listeners, setNodeRef, isDragging } = useDraggable({
+        id: `workspace-node:performer:${row.id}`,
+        disabled: dragDisabled,
+        data: {
+            kind: 'performer',
+            source: 'workspace-node',
+            nodeId: row.id,
+            nodeType: 'performer',
+            label: row.label,
+            name: row.label,
+        },
+    })
+    const rowAccessibilityProps = dragDisabled
+        ? { role: 'button' as const, tabIndex: 0 }
+        : attributes
     const THREAD_LIMIT = 5
     const visibleChildren = showAll ? row.children : row.children.slice(0, THREAD_LIMIT)
     const hiddenCount = row.children.length - THREAD_LIMIT
@@ -110,13 +129,16 @@ export default function WorkspaceExplorerPerformerGroup({
     return (
         <div className="thread-group">
             <div
-                role="button"
-                tabIndex={0}
+                ref={setNodeRef}
+                {...rowAccessibilityProps}
                 className={[
                     'thread-card',
+                    dragDisabled ? '' : 'thread-card--draggable',
                     row.active ? 'active' : '',
                     row.hidden ? 'muted' : '',
+                    isDragging ? 'is-dragging' : '',
                 ].filter(Boolean).join(' ')}
+                {...(dragDisabled ? {} : listeners)}
                 onClick={() => onOpenPerformer(row.id)}
                 onKeyDown={(event) => {
                     if (event.key === 'Enter' || event.key === ' ') {
@@ -127,6 +149,7 @@ export default function WorkspaceExplorerPerformerGroup({
             >
                 <span
                     className={`thread-card__chevron ${expanded ? 'is-open' : ''}`}
+                    onPointerDown={(event) => event.stopPropagation()}
                     onClick={(event) => {
                         event.stopPropagation()
                         onToggleExpanded()
@@ -140,7 +163,11 @@ export default function WorkspaceExplorerPerformerGroup({
                 <span className="thread-card__body">
                     <span className="thread-card__name">{row.label}</span>
                 </span>
-                <span className="thread-card__actions" onClick={(event) => event.stopPropagation()}>
+                <span
+                    className="thread-card__actions"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => event.stopPropagation()}
+                >
                     {pendingDelete === rowKey ? (
                         <>
                             <span className="thread-card__delete-label">Delete?</span>

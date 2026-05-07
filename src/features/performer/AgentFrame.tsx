@@ -19,7 +19,7 @@ import { hasModelConfig, resolvePerformerAgentId } from '../../lib/performers'
 import { usePerformerPresentation } from '../../hooks/usePerformerPresentation'
 import { api } from '../../api'
 import { showToast } from '../../lib/toast'
-import { getCanvasViewportSize, isFocusTarget } from '../../lib/focus-utils'
+import { getCanvasViewportSize, isFocusTarget, isSplitViewTarget } from '../../lib/focus-utils'
 import { assetUrnAuthor, assetUrnDisplayName, assetUrnPath } from '../../lib/asset-urn'
 import type { AssetListItem } from '../../../shared/asset-contracts'
 import type { AssetRef, ModelConfig } from '../../types'
@@ -30,7 +30,7 @@ import PerformerChatPanel from './PerformerChatPanel'
 import PerformerFrameHeaderMeta from './PerformerFrameHeaderMeta'
 import { useChatSession } from '../../store/session/use-chat-session'
 
-import { Pencil, EyeOff, Maximize2, Minimize2 } from 'lucide-react'
+import { Pencil, EyeOff, Maximize2, Minimize2, X } from 'lucide-react'
 import './AgentFrame.css'
 import './AgentChat.css'
 import './AgentChatComposer.css'
@@ -77,6 +77,9 @@ export default function AgentFrame({ data, id }: AgentFrameProps) {
         removePerformerMcp, setPerformerMcpBinding, removePerformerDance,
         enterFocusMode, exitFocusMode,
         focusSnapshot,
+        viewMode,
+        splitView,
+        removeSplitViewPane,
     } = useStudioStore(useShallow((state) => ({
         selectedPerformerId: state.selectedPerformerId,
         editingTarget: state.editingTarget,
@@ -97,6 +100,9 @@ export default function AgentFrame({ data, id }: AgentFrameProps) {
         enterFocusMode: state.enterFocusMode,
         exitFocusMode: state.exitFocusMode,
         focusSnapshot: state.focusSnapshot,
+        viewMode: state.viewMode,
+        splitView: state.splitView,
+        removeSplitViewPane: state.removeSplitViewPane,
     })))
 
     // ─── Local State ──────────────────────────────────
@@ -104,7 +110,10 @@ export default function AgentFrame({ data, id }: AgentFrameProps) {
 
     // ─── Derived ──────────────────────────────────────
     const isSelected = selectedPerformerId === id
-    const isFocused = isFocusTarget(focusSnapshot, id, 'performer')
+    const isFullView = viewMode === 'full' && isFocusTarget(focusSnapshot, id, 'performer')
+    const splitPane = splitView.panes.find((pane) => pane.type === 'performer' && pane.nodeId === id) || null
+    const isSplitPane = isSplitViewTarget(viewMode, splitView, id, 'performer')
+    const isFullscreenSurface = isFullView || isSplitPane
     const chatSession = useChatSession(id)
     const messages = chatSession.messages
     const isLoading = chatSession.isLoading
@@ -120,7 +129,7 @@ export default function AgentFrame({ data, id }: AgentFrameProps) {
 
     // ─── Queries ──────────────────────────────────────
     const { data: agents = [] } = useAgents(isSelected || shouldShowEditPanel)
-    const { data: danceAssets = [] } = useAssetKind('dance', isSelected || isFocused || shouldShowEditPanel)
+    const { data: danceAssets = [] } = useAssetKind('dance', isSelected || isFullscreenSurface || shouldShowEditPanel)
     const { data: assetInventory = [] } = useAssets(isSelected || shouldShowEditPanel)
     const { data: mcpServers = [] } = useMcpServers(isSelected || shouldShowEditPanel)
 
@@ -176,13 +185,18 @@ export default function AgentFrame({ data, id }: AgentFrameProps) {
     }, [])
 
     const handleToggleFocus = useCallback(() => {
-        if (isFocused) {
+        if (isFullView) {
             exitFocusMode()
             return
         }
 
         enterFocusMode(id, 'performer', getCanvasViewportSize())
-    }, [enterFocusMode, exitFocusMode, id, isFocused])
+    }, [enterFocusMode, exitFocusMode, id, isFullView])
+
+    const handleRemoveSplitPane = useCallback(() => {
+        if (!splitPane) return
+        removeSplitViewPane(splitPane.paneId, getCanvasViewportSize())
+    }, [removeSplitViewPane, splitPane])
 
     const openAssetEditor = useCallback(async (
         kind: 'tal' | 'dance',
@@ -232,20 +246,34 @@ export default function AgentFrame({ data, id }: AgentFrameProps) {
                 </>
             ) : null}
             <CanvasWindowFrame
-                className={`nowheel ${isFocused ? 'canvas-frame--focused' : ''}`}
+                className={`nowheel ${isFullView ? 'canvas-frame--focused' : ''} ${isSplitPane ? 'canvas-frame--split-pane' : ''}`}
                 width={data.width || 320}
                 height={data.height || 400}
                 transformActive={!!data.transformActive}
                 onActivateTransform={data.onActivateTransform as (() => void) | undefined}
                 onDeactivateTransform={data.onDeactivateTransform as (() => void) | undefined}
                 selected={isSelected}
-                focused={isFocused}
+                focused={isFullView}
+                locked={isFullscreenSurface}
+                dragHandle={splitPane ? {
+                    id: `split-pane-frame:${splitPane.paneId}`,
+                    data: {
+                        kind: 'performer',
+                        source: 'split-pane',
+                        paneId: splitPane.paneId,
+                        nodeId: id,
+                        nodeType: 'performer',
+                        label: data.name,
+                        name: data.name,
+                    },
+                    title: 'Move Split View pane',
+                } : undefined}
                 minWidth={280}
                 minHeight={320}
                 headerStart={<span className="canvas-frame__name">{data.name}</span>}
                 headerEnd={(
                     <div className="canvas-frame__header-actions">
-                        {!isFocused && (
+                        {!isFullscreenSurface && (
                             <PerformerFrameHeaderMeta
                                 modelLabel={data.modelLabel || null}
                                 modelTitle={data.modelTitle || null}
@@ -253,18 +281,32 @@ export default function AgentFrame({ data, id }: AgentFrameProps) {
                                 danceSummary={data.danceSummary || null}
                             />
                         )}
-                        <button
-                            className={`icon-btn ${isFocused ? 'icon-btn--active' : ''}`}
-                            onClick={(e) => {
-                                e.stopPropagation()
-                                handleToggleFocus()
-                            }}
-                            title={isFocused ? 'Exit focus mode' : 'Focus mode'}
-                            style={{ padding: '0 4px', opacity: 0.7 }}
-                        >
-                            {isFocused ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
-                        </button>
-                        {!isFocused && !shouldShowEditPanel && (
+                        {isSplitPane ? (
+                            <button
+                                className="icon-btn"
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleRemoveSplitPane()
+                                }}
+                                title="Remove from Split View"
+                                style={{ padding: '0 4px', opacity: 0.7 }}
+                            >
+                                <X size={11} />
+                            </button>
+                        ) : (
+                            <button
+                                className={`icon-btn ${isFullView ? 'icon-btn--active' : ''}`}
+                                onClick={(e) => {
+                                    e.stopPropagation()
+                                    handleToggleFocus()
+                                }}
+                                title={isFullView ? 'Exit focus mode' : 'Focus mode'}
+                                style={{ padding: '0 4px', opacity: 0.7 }}
+                            >
+                                {isFullView ? <Minimize2 size={11} /> : <Maximize2 size={11} />}
+                            </button>
+                        )}
+                        {!isFullscreenSurface && !shouldShowEditPanel && (
                             <button
                                 className="icon-btn"
                                 onClick={(e) => { e.stopPropagation(); useStudioStore.getState().openPerformerEditor(id) }}
@@ -274,7 +316,7 @@ export default function AgentFrame({ data, id }: AgentFrameProps) {
                                 <Pencil size={11} />
                             </button>
                         )}
-                        {!isFocused && (
+                        {!isFullscreenSurface && (
                             <button
                                 className="icon-btn"
                                 onClick={(e) => { e.stopPropagation(); togglePerformerVisibility(id) }}

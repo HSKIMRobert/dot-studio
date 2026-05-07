@@ -24,6 +24,8 @@
 .canvas-area {
     flex: 1;
     position: relative;
+    display: flex;
+    flex-direction: column;
     background: var(--bg-canvas);
     overflow: hidden;
     transition: background 0.3s ease;
@@ -36,6 +38,45 @@
 
 .canvas-area--focus .react-flow__background {
     display: none !important;
+}
+
+.canvas-flow-shell {
+    flex: 1 1 auto;
+    min-height: 0;
+    position: relative;
+    overflow: hidden;
+}
+
+.canvas-flow-shell .react-flow {
+    width: 100%;
+    height: 100%;
+}
+
+.canvas-fullscreen-empty-state {
+    position: absolute;
+    inset: 0;
+    z-index: 70;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-6);
+    background: var(--bg-panel);
+    color: var(--text-secondary);
+    pointer-events: auto;
+}
+
+.canvas-fullscreen-empty-state__copy {
+    max-width: min(520px, 80%);
+    padding: var(--space-4) var(--space-5);
+    border: 1px solid var(--border-main);
+    border-radius: var(--radius);
+    background: var(--bg-elevated);
+    box-shadow: var(--shadow-dropdown);
+    color: var(--text-primary);
+    font-size: var(--font-lg);
+    font-weight: 700;
+    line-height: 1.45;
+    text-align: center;
 }
 
 .canvas-drop-overlay {
@@ -94,27 +135,15 @@
     background: rgba(0, 0, 0, 0.18);
 }
 
-/* ── Canvas Top-Right Bar (Controls + Toolbar) ─── */
-.canvas-top-right-bar {
-    position: absolute;
-    top: 16px;
-    right: 16px;
-    z-index: 1000;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    pointer-events: auto;
-}
-
 .canvas-controls {
     display: flex;
     align-items: center;
     gap: 0;
+    height: 30px;
     background: var(--bg-panel);
     border: 1px solid var(--border-main);
-    border-radius: var(--radius-lg);
+    border-radius: var(--radius);
     overflow: hidden;
-    box-shadow: var(--shadow-dropdown);
 }
 
 .canvas-controls__btn {
@@ -140,8 +169,24 @@
     color: var(--text-primary);
 }
 
+.canvas-controls__btn:focus-visible {
+    outline: 2px solid var(--accent-light);
+    outline-offset: -2px;
+}
+
+.canvas-controls__btn:disabled {
+    opacity: 0.42;
+    cursor: default;
+}
+
+.canvas-controls__btn:disabled:hover {
+    background: var(--bg-panel);
+    color: var(--text-secondary);
+}
+
 .canvas-controls__btn svg {
-    fill: currentColor;
+    fill: none;
+    stroke: currentColor;
 }
 
 .compose-banner {

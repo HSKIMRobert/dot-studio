@@ -1,7 +1,8 @@
-import { Hexagon, Zap, Cpu, Server, Package } from 'lucide-react'
+import { Hexagon, Zap, Cpu, Server, Package, MessageSquare, Workflow } from 'lucide-react'
 import { useStudioStore } from './store'
 import type { StudioState } from './store'
 import { api } from './api'
+import { resolveFocusTarget, resolveSplitDropIntent, SPLIT_VIEW_MAX_PANES } from './lib/focus-utils'
 import { loadPerformerImportContext, normalizeImportedPerformerAsset } from './lib/performer-import'
 import { showToast } from './lib/toast'
 import { extractMcpServerNamesFromConfig } from '../shared/mcp-config'
@@ -12,6 +13,8 @@ import {
     getAssetAuthor,
     getAssetSlug,
     applyAssetToPerformerTarget,
+    isSplitPaneDrag,
+    isSplitViewNodeDrag,
 } from './lib/dnd-handlers'
 import type { DragAsset, DropTargetData, PerformerAssetPayload } from './lib/dnd-handlers'
 import type { DragStartEvent, DragEndEvent } from '@dnd-kit/core'
@@ -36,8 +39,103 @@ export function getDragIcon(kind: string) {
         case 'dance': return <Zap size={12} className="asset-icon dance" />
         case 'model': return <Cpu size={12} className="asset-icon model" />
         case 'mcp': return <Server size={12} className="asset-icon mcp" />
+        case 'act': return <Workflow size={12} className="asset-icon act" />
         case 'performer': return <Package size={12} className="asset-icon performer" />
+        case 'workspace-performer': return <MessageSquare size={12} className="asset-icon performer" />
+        case 'workspace-act': return <Workflow size={12} className="asset-icon act" />
         default: return <Package size={12} />
+    }
+}
+
+function dragEndClientPoint(event: DragEndEvent) {
+    const activatorEvent = event.activatorEvent
+    if ('clientX' in activatorEvent && 'clientY' in activatorEvent) {
+        const pointerEvent = activatorEvent as MouseEvent
+        return {
+            x: pointerEvent.clientX + event.delta.x,
+            y: pointerEvent.clientY + event.delta.y,
+        }
+    }
+
+    if ('touches' in activatorEvent && (activatorEvent as TouchEvent).touches.length > 0) {
+        const touch = (activatorEvent as TouchEvent).touches[0]
+        return {
+            x: touch.clientX + event.delta.x,
+            y: touch.clientY + event.delta.y,
+        }
+    }
+
+    if ('changedTouches' in activatorEvent && (activatorEvent as TouchEvent).changedTouches.length > 0) {
+        const touch = (activatorEvent as TouchEvent).changedTouches[0]
+        return {
+            x: touch.clientX + event.delta.x,
+            y: touch.clientY + event.delta.y,
+        }
+    }
+
+    return null
+}
+
+function resolveSplitDropPoint(event: DragEndEvent, store: StudioState, asset: DragAsset) {
+    if (typeof document === 'undefined') {
+        return null
+    }
+
+    const point = dragEndClientPoint(event)
+    const shell = document.querySelector('.canvas-flow-shell')
+    if (!point || !shell) {
+        return null
+    }
+
+    const rect = shell.getBoundingClientRect()
+    if (
+        point.x < rect.left
+        || point.x > rect.right
+        || point.y < rect.top
+        || point.y > rect.bottom
+    ) {
+        return null
+    }
+
+    const viewportSize = {
+        width: Math.round(rect.width),
+        height: Math.round(rect.height),
+    }
+
+    if (store.viewMode === 'full') {
+        return {
+            paneId: null,
+            targetIndex: null,
+            placement: null,
+            viewportSize,
+        }
+    }
+
+    const localPoint = {
+        x: point.x - rect.left,
+        y: point.y - rect.top,
+    }
+    const alreadyOpenPane = store.splitView.panes.find((pane) => pane.nodeId === asset.nodeId && pane.type === asset.nodeType) || null
+    const isReordering = isSplitPaneDrag(asset)
+    const canPlaceAtEdge = store.splitView.panes.length < SPLIT_VIEW_MAX_PANES || !!alreadyOpenPane || isReordering
+    const intent = resolveSplitDropIntent({
+        point: localPoint,
+        panes: store.splitView.panes,
+        viewportSize,
+        rows: store.splitView.rows,
+        rowWeights: store.splitView.rowWeights,
+        columnWeights: store.splitView.columnWeights,
+        canPlaceAtEdge,
+    })
+    if (!intent) {
+        return null
+    }
+
+    return {
+        paneId: intent.paneId,
+        targetIndex: intent.targetIndex,
+        placement: intent.placement,
+        viewportSize,
     }
 }
 
@@ -165,19 +263,103 @@ export function createDragEndHandler(
     return async (event: DragEndEvent) => {
         setActiveDrag(null)
         const { active, over } = event
-        if (!over) return
 
         const asset = active.data.current as DragAsset
-        const dropData = over.data.current as DropTargetData
+        const dropData = over?.data.current as DropTargetData | undefined
 
-        if (!asset || !dropData) {
+        if (!asset) {
             return
         }
 
         const store = useStudioStore.getState()
 
+        const handleSplitViewNodeDrop = () => {
+            if (!isSplitViewNodeDrag(asset) || (store.viewMode !== 'full' && store.viewMode !== 'split')) {
+                return false
+            }
+
+            const dropPoint = resolveSplitDropPoint(event, store, asset)
+            if (!dropPoint) {
+                return false
+            }
+
+            const alreadyOpenPane = store.viewMode === 'split'
+                ? store.splitView.panes.find((pane) => pane.nodeId === asset.nodeId && pane.type === asset.nodeType) || null
+                : null
+
+            if (store.viewMode === 'full') {
+                const currentTarget = resolveFocusTarget(store.focusSnapshot)
+                if (currentTarget && currentTarget.id === asset.nodeId && currentTarget.type === asset.nodeType) {
+                    return true
+                }
+                store.addSplitViewPane(asset.nodeId, asset.nodeType, dropPoint.viewportSize)
+                return true
+            }
+
+            if (isSplitPaneDrag(asset)) {
+                if (dropPoint.targetIndex === null) {
+                    store.setSplitViewActivePane(asset.nodeId, asset.nodeType)
+                    return true
+                }
+
+                if (!dropPoint.placement) {
+                    return true
+                }
+                store.moveSplitViewPane(asset.paneId, dropPoint.placement, dropPoint.viewportSize)
+                return true
+            }
+
+            if (dropPoint.targetIndex !== null) {
+                if (alreadyOpenPane) {
+                    if (!dropPoint.placement) {
+                        return true
+                    }
+                    store.moveSplitViewPane(alreadyOpenPane.paneId, dropPoint.placement, dropPoint.viewportSize)
+                    return true
+                }
+
+                if (store.splitView.panes.length < SPLIT_VIEW_MAX_PANES) {
+                    store.insertSplitViewPane(asset.nodeId, asset.nodeType, dropPoint.placement || dropPoint.targetIndex, dropPoint.viewportSize)
+                    return true
+                }
+
+                if (dropPoint.paneId) {
+                    store.replaceSplitViewPane(dropPoint.paneId, asset.nodeId, asset.nodeType, dropPoint.viewportSize)
+                    return true
+                }
+
+                showDropWarning(`Split View supports up to ${SPLIT_VIEW_MAX_PANES} panes.`)
+                return true
+            }
+
+            if (alreadyOpenPane) {
+                store.setSplitViewActivePane(asset.nodeId, asset.nodeType)
+                return true
+            }
+
+            if (store.splitView.panes.length >= SPLIT_VIEW_MAX_PANES) {
+                showDropWarning(`Split View supports up to ${SPLIT_VIEW_MAX_PANES} panes. Drop onto an existing slot to replace it.`)
+                return true
+            }
+
+            store.addSplitViewPane(asset.nodeId, asset.nodeType, dropPoint.viewportSize)
+            return true
+        }
+
+        if (handleSplitViewNodeDrop()) {
+            return
+        }
+
+        if (!dropData) {
+            return
+        }
+
         const handleCanvasRootDrop = async () => {
             if (dropData.type !== 'canvas-root') {
+                return false
+            }
+
+            if (isSplitViewNodeDrag(asset)) {
                 return false
             }
 

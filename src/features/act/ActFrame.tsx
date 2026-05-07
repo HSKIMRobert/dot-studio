@@ -15,7 +15,7 @@ import {
 import { resolveActThreadOrdinal, resolveDisplayedActThread } from '../../lib/act-threads'
 import ActHeaderActions from './ActHeaderActions'
 import ActSurfacePanel from './ActSurfacePanel'
-import { getCanvasViewportSize, isFocusTarget } from '../../lib/focus-utils'
+import { getCanvasViewportSize, isFocusTarget, isSplitViewTarget } from '../../lib/focus-utils'
 import { evaluateActReadiness } from './act-readiness'
 import './ActFrame.css'
 
@@ -41,8 +41,11 @@ export default function ActFrame({ data, id }: NodeProps<Node<ActFrameData, 'act
         activeThreadId,
         actThreads,
         focusSnapshot,
+        viewMode,
+        splitView,
         enterFocusMode,
         exitFocusMode,
+        removeSplitViewPane,
     } = useStudioStore(useShallow((state) => ({
         acts: state.acts,
         performers: state.performers,
@@ -55,8 +58,11 @@ export default function ActFrame({ data, id }: NodeProps<Node<ActFrameData, 'act
         activeThreadId: state.activeThreadId,
         actThreads: state.actThreads,
         focusSnapshot: state.focusSnapshot,
+        viewMode: state.viewMode,
+        splitView: state.splitView,
         enterFocusMode: state.enterFocusMode,
         exitFocusMode: state.exitFocusMode,
+        removeSplitViewPane: state.removeSplitViewPane,
     })))
     const bodyRef = useRef<HTMLDivElement>(null)
 
@@ -68,7 +74,10 @@ export default function ActFrame({ data, id }: NodeProps<Node<ActFrameData, 'act
 
     const isSelected = selectedActId === id
     const isEditing = actEditorState?.actId === id
-    const isFocused = isFocusTarget(focusSnapshot, id, 'act')
+    const isFocused = viewMode === 'full' && isFocusTarget(focusSnapshot, id, 'act')
+    const splitPane = splitView.panes.find((pane) => pane.type === 'act' && pane.nodeId === id) || null
+    const isSplitPane = isSplitViewTarget(viewMode, splitView, id, 'act')
+    const isFullscreenSurface = isFocused || isSplitPane
     const width = data.width || act?.width || ACT_DEFAULT_WIDTH
     const height = resolveActExpandedHeight(act?.height)
     const threads = useMemo(() => actThreads[id] || EMPTY_THREADS, [actThreads, id])
@@ -105,6 +114,10 @@ export default function ActFrame({ data, id }: NodeProps<Node<ActFrameData, 'act
 
         enterFocusMode(id, 'act', getCanvasViewportSize())
     }, [enterFocusMode, exitFocusMode, id, isFocused])
+    const handleRemoveSplitPane = useCallback(() => {
+        if (!splitPane) return
+        removeSplitViewPane(splitPane.paneId, getCanvasViewportSize())
+    }, [removeSplitViewPane, splitPane])
 
     if (!act) {
         return null
@@ -113,10 +126,24 @@ export default function ActFrame({ data, id }: NodeProps<Node<ActFrameData, 'act
     return (
         <div className="act-frame-shell">
             <CanvasWindowFrame
-                className={`act-frame nowheel ${isSelected ? 'act-frame--selected' : ''} ${isEditing ? 'act-frame--editing' : ''} ${isFocused ? 'canvas-frame--focused' : ''} act-frame--chat`}
+                className={`act-frame nowheel ${isSelected ? 'act-frame--selected' : ''} ${isEditing ? 'act-frame--editing' : ''} ${isFocused ? 'canvas-frame--focused' : ''} ${isSplitPane ? 'canvas-frame--split-pane' : ''} act-frame--chat`}
                 width={width}
                 height={height}
                 focused={isFocused}
+                locked={isFullscreenSurface}
+                dragHandle={splitPane ? {
+                    id: `split-pane-frame:${splitPane.paneId}`,
+                    data: {
+                        kind: 'act',
+                        source: 'split-pane',
+                        paneId: splitPane.paneId,
+                        nodeId: id,
+                        nodeType: 'act',
+                        label: act.name,
+                        name: act.name,
+                    },
+                    title: 'Move Split View pane',
+                } : undefined}
                 minWidth={ACT_DEFAULT_WIDTH}
                 minHeight={ACT_MIN_EXPANDED_HEIGHT}
                 transformActive={data.transformActive || false}
@@ -137,9 +164,11 @@ export default function ActFrame({ data, id }: NodeProps<Node<ActFrameData, 'act
                 headerEnd={(
                     <ActHeaderActions
                         focused={isFocused}
+                        splitPane={isSplitPane}
                         editing={isEditing}
                         readiness={readiness}
                         onToggleFocus={handleToggleFocus}
+                        onRemoveSplitPane={handleRemoveSplitPane}
                         onToggleEdit={handleToggleEdit}
                         onHide={() => toggleActVisibility(id)}
                     />

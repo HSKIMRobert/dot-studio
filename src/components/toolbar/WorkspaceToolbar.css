@@ -1,30 +1,55 @@
 .toolbar {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: var(--space-1);
+    height: 30px;
+    min-width: 0;
+    padding: 2px;
+    border: 1px solid var(--border-main);
+    border-radius: var(--radius);
     background: var(--bg-panel);
-    border: 1px solid var(--border-light);
-    border-radius: var(--radius-lg);
-    padding: 6px 12px;
-    box-shadow: var(--shadow-dropdown);
 }
 
 .toolbar__item {
     display: flex;
     align-items: center;
-    gap: 4px;
-    font-size: var(--font-base);
-    font-weight: 500;
+    gap: var(--space-1);
+    min-height: 24px;
+    padding: 0 var(--space-2);
+    border: none;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    font-size: var(--font-sm);
+    font-weight: 700;
     color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+button.toolbar__item {
+    cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+}
+
+button.toolbar__item:hover {
+    background: var(--bg-hover);
+    color: var(--text-primary);
+}
+
+.dot-status.dot-ok {
+    color: var(--status-success);
+    cursor: default;
+}
+
+.dot-status.dot-missing {
+    color: var(--status-danger);
 }
 
 .dot-auth-status {
-    border-radius: 999px;
     transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
 }
 
 .dot-auth-status--ok {
-    color: #14ae5c;
+    color: var(--status-success);
 }
 
 .dot-auth-status--warn {
@@ -38,20 +63,34 @@
 .divider-v {
     width: 1px;
     height: 16px;
-    background: var(--border-strong);
-    margin: 0 4px;
+    background: var(--border-main);
+    margin: 0 var(--space-1);
+}
+
+.toolbar__status-icon--ok {
+    color: var(--status-success);
+}
+
+.toolbar__status-icon--warn {
+    color: var(--status-danger);
+}
+
+.toolbar .icon-btn {
+    flex: 0 0 auto;
+    width: 24px;
+    height: 24px;
 }
 
 /* ── Assistant text button ─── */
 .toolbar__assistant-btn {
     display: flex;
     align-items: center;
-    margin-left: auto;
-    padding: 3px 10px;
+    height: 24px;
+    padding: 0 var(--space-3);
     border: 1px solid var(--border-light);
-    border-radius: var(--radius);
+    border-radius: var(--radius-sm);
     background: transparent;
-    font-size: var(--font-base);
+    font-size: var(--font-sm);
     font-weight: 700;
     color: var(--text-secondary);
     cursor: pointer;

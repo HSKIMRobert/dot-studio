@@ -1,0 +1,56 @@
+.split-view-resize-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 920;
+    pointer-events: none;
+}
+
+.split-view-resize-overlay__handle {
+    position: absolute;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    pointer-events: auto;
+    touch-action: none;
+}
+
+.split-view-resize-overlay__handle::after {
+    content: "";
+    position: absolute;
+    background: color-mix(in srgb, var(--border-active) 68%, transparent);
+    opacity: 0;
+    transition: opacity 0.12s ease, background 0.12s ease;
+}
+
+.split-view-resize-overlay__handle--row {
+    cursor: row-resize;
+}
+
+.split-view-resize-overlay__handle--row::after {
+    left: var(--space-5);
+    right: var(--space-5);
+    top: 4px;
+    height: 2px;
+}
+
+.split-view-resize-overlay__handle--column {
+    cursor: col-resize;
+}
+
+.split-view-resize-overlay__handle--column::after {
+    top: var(--space-5);
+    bottom: var(--space-5);
+    left: 4px;
+    width: 2px;
+}
+
+.split-view-resize-overlay__handle:hover::after,
+.split-view-resize-overlay__handle:active::after,
+.split-view-resize-overlay.is-resizing .split-view-resize-overlay__handle::after {
+    opacity: 1;
+}
+
+.split-view-resize-overlay__handle:active::after {
+    background: var(--border-active);
+}

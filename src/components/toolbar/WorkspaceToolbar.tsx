@@ -43,6 +43,7 @@ export default function WorkspaceToolbar() {
     const dotInitialized = dotStatus?.initialized ?? false;
     const [gitBranch, setGitBranch] = useState<string | null>(null);
     const [discordOnline, setDiscordOnline] = useState(false);
+    const effectiveDiscordOnline = serverConnected && discordOnline;
 
     // Git branch polling
     useEffect(() => {
@@ -62,7 +63,6 @@ export default function WorkspaceToolbar() {
 
     useEffect(() => {
         if (!serverConnected) {
-            setDiscordOnline(false);
             return;
         }
         const fetchDiscord = () => {
@@ -102,15 +102,16 @@ export default function WorkspaceToolbar() {
         <>
             <div className="toolbar">
                 <button
+                    type="button"
                     className={`toolbar__item dot-status ${dotInitialized ? 'dot-ok' : 'dot-missing'}`}
                     onClick={handleDotInit}
+                    aria-label={dotInitialized ? 'DOT workspace initialized' : 'Initialize DOT workspace'}
                     title={dotInitialized
                         ? 'DOT initialized for this workspace'
                         : 'DOT not initialized — click to init'
                     }
-                    style={{ cursor: dotInitialized ? 'default' : 'pointer', border: 'none', background: 'none', display: 'flex', alignItems: 'center', gap: '4px', padding: '0 6px', fontSize: '11px', color: 'var(--text-secondary)' }}
                 >
-                    <Hexagon size={12} color={dotInitialized ? '#14AE5C' : '#F24822'} />
+                    <Hexagon size={12} />
                     <span>DOT</span>
                 </button>
 
@@ -125,9 +126,10 @@ export default function WorkspaceToolbar() {
                         align="right"
                         trigger={
                             <button
+                                type="button"
                                 className="toolbar__item dot-auth-status dot-auth-status--ok"
+                                aria-label={`DOT account @${authUser.username}`}
                                 title={`Signed in as @${authUser.username}`}
-                                style={{ cursor: 'pointer', border: 'none', background: 'none', display: 'flex', alignItems: 'center', gap: '4px', padding: '0 6px', fontSize: '11px' }}
                             >
                                 <UserRound size={12} />
                                 <span>@{authUser.username}</span>
@@ -140,13 +142,14 @@ export default function WorkspaceToolbar() {
                     />
                 ) : (
                     <button
+                        type="button"
                         className="toolbar__item dot-auth-status dot-auth-status--warn"
                         onClick={() => void startLogin(true)}
+                        aria-label={isAuthenticating ? 'DOT sign in pending' : 'Sign in to DOT'}
                         title={isAuthenticating
                             ? 'Waiting for DOT login to complete in the browser'
                             : 'Review the DOT Terms of Service and sign in'
                         }
-                        style={{ cursor: 'pointer', border: 'none', background: 'none', display: 'flex', alignItems: 'center', gap: '4px', padding: '0 6px', fontSize: '11px' }}
                     >
                         <LogIn size={12} />
                         <span>{isAuthenticating ? 'Signing in…' : 'Sign in'}</span>
@@ -156,15 +159,20 @@ export default function WorkspaceToolbar() {
                 <span
                     className="toolbar__item"
                     title={serverConnected ? 'Local server connected' : 'Local server disconnected'}
+                    aria-label={serverConnected ? 'Local server connected' : 'Local server disconnected'}
                 >
-                    {serverConnected ? <CheckCircle size={12} color="#14AE5C" /> : <AlertCircle size={12} color="#F24822" />}
+                    {serverConnected ? (
+                        <CheckCircle size={12} className="toolbar__status-icon toolbar__status-icon--ok" />
+                    ) : (
+                        <AlertCircle size={12} className="toolbar__status-icon toolbar__status-icon--warn" />
+                    )}
                 </span>
 
                 <div className="divider-v" />
 
                 <DropdownMenu
                     trigger={
-                        <button className="icon-btn" title="Terminal">
+                        <button type="button" className="icon-btn" title="Terminal" aria-label="Terminal options">
                             <TerminalIcon size={12} className={isTerminalOpen ? 'icon-active' : ''} />
                             <ChevronDown size={10} />
                         </button>
@@ -175,31 +183,47 @@ export default function WorkspaceToolbar() {
                     ]}
                 />
 
-                <button className="icon-btn" onClick={() => setTrackingOpen(!isTrackingOpen)} title="Workspace Tracking">
+                <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => setTrackingOpen(!isTrackingOpen)}
+                    title="Workspace Tracking"
+                    aria-label="Toggle workspace tracking"
+                    aria-pressed={isTrackingOpen}
+                >
                     <Github size={12} className={isTrackingOpen ? 'icon-active' : ''} />
                 </button>
 
-                <button className="icon-btn" onClick={() => setPublishOpen(true)} title="Save or publish selected asset">
+                <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => setPublishOpen(true)}
+                    title="Save or publish selected asset"
+                    aria-label="Save or publish selected asset"
+                >
                     <Upload size={12} />
                 </button>
 
                 <button
+                    type="button"
                     className="icon-btn"
                     onClick={() => openSettings('discord')}
-                    title={discordOnline ? 'Discord connected' : 'Discord settings'}
+                    title={effectiveDiscordOnline ? 'Discord connected' : 'Discord settings'}
+                    aria-label={effectiveDiscordOnline ? 'Discord connected' : 'Discord settings'}
                 >
-                    <MessageCircle size={12} className={discordOnline ? 'icon-active' : ''} />
+                    <MessageCircle size={12} className={effectiveDiscordOnline ? 'icon-active' : ''} />
                 </button>
 
-                <button className="icon-btn" onClick={toggleTheme} title="Toggle Theme">
+                <button type="button" className="icon-btn" onClick={toggleTheme} title="Toggle Theme" aria-label="Toggle theme">
                     {theme === 'dark' ? <Sun size={12} /> : <Moon size={12} />}
                 </button>
 
-                <button className="icon-btn" onClick={() => openSettings('general')} title="Settings">
+                <button type="button" className="icon-btn" onClick={() => openSettings('general')} title="Settings" aria-label="Settings">
                     <Settings size={12} />
                 </button>
 
                 <button
+                    type="button"
                     className={`toolbar__assistant-btn ${isAssistantOpen ? 'is-active' : ''}`}
                     onClick={toggleAssistant}
                     title={isAssistantOpen ? 'Hide Studio Assistant' : 'Show Studio Assistant'}

@@ -47,8 +47,8 @@ export default function App() {
   const isTerminalOpen = useStudioStore(s => s.isTerminalOpen);
   const setTerminalOpen = useStudioStore(s => s.setTerminalOpen);
   const isTrackingOpen = useStudioStore(s => s.isTrackingOpen);
-  const focusSnapshot = useStudioStore(s => s.focusSnapshot);
-  const isAnyFocusActive = !!focusSnapshot;
+  const viewMode = useStudioStore(s => s.viewMode);
+  const isAnyFullscreenActive = viewMode !== 'canvas';
 
   const isInitialMount = useRef(true);
 
@@ -174,13 +174,13 @@ export default function App() {
           <ReactFlowProvider>
             <CanvasArea />
           </ReactFlowProvider>
-          {!isAnyFocusActive && (
+          {!isAnyFullscreenActive && (
             <Suspense fallback={null}>
               {isTrackingOpen ? <WorkspaceTrackingPanel /> : <AssistantChat />}
             </Suspense>
           )}
         </div>
-        {!isAnyFocusActive && (
+        {!isAnyFullscreenActive && (
           <Suspense fallback={null}>
             <TerminalPanel
               isOpen={isTerminalOpen}

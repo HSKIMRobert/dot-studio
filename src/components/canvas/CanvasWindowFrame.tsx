@@ -1,5 +1,7 @@
-import { useRef, useEffect, type ReactNode, type RefObject } from 'react'
+import { useRef, useEffect, useId, type ReactNode, type RefObject } from 'react'
 import { NodeResizer } from '@xyflow/react'
+import { useDraggable } from '@dnd-kit/core'
+import { Scan } from 'lucide-react'
 import CanvasDragHandle from './CanvasDragHandle'
 import useTransformChrome from './useTransformChrome'
 import './CanvasWindowFrame.css'
@@ -12,6 +14,8 @@ type CanvasWindowFrameProps = {
     resizable?: boolean
     /** When true, hides drag handle, resizer, and applies immersive styling. */
     focused?: boolean
+    /** When true, hides drag handle and resizer without applying immersive fullscreen styling. */
+    locked?: boolean
     minWidth?: number
     minHeight?: number
     /** True when the parent canvas has entered transform mode for this node. */
@@ -22,6 +26,11 @@ type CanvasWindowFrameProps = {
     onResizeStart?: () => void
     /** Callback fired when user finishes resizing. */
     onResizeEnd?: () => void
+    dragHandle?: {
+        id: string
+        data: Record<string, unknown>
+        title?: string
+    }
     selected?: boolean
     headerStart: ReactNode
     headerEnd?: ReactNode
@@ -34,6 +43,7 @@ export default function CanvasWindowFrame({
     className = '',
     resizable = true,
     focused = false,
+    locked = false,
     minWidth = 280,
     minHeight = 220,
     transformActive = false,
@@ -41,6 +51,7 @@ export default function CanvasWindowFrame({
     onDeactivateTransform,
     onResizeStart,
     onResizeEnd,
+    dragHandle,
     selected = false,
     headerStart,
     headerEnd,
@@ -49,6 +60,17 @@ export default function CanvasWindowFrame({
     children,
 }: CanvasWindowFrameProps) {
     const frameRef = useRef<HTMLDivElement>(null)
+    const fallbackDragId = useId()
+    const {
+        attributes: dragAttributes,
+        listeners: dragListeners,
+        setNodeRef: setDragNodeRef,
+        isDragging,
+    } = useDraggable({
+        id: dragHandle?.id || `canvas-window-frame-disabled-drag:${fallbackDragId}`,
+        data: dragHandle?.data,
+        disabled: !dragHandle,
+    })
 
     const {
         isTransformChromeActive,
@@ -88,12 +110,13 @@ export default function CanvasWindowFrame({
         onResizeStart?.()
     }
 
-    const effectiveResizable = resizable && !focused
+    const isLocked = focused || locked
+    const effectiveResizable = resizable && !isLocked
 
     return (
         <div
             ref={frameRef}
-            className={`canvas-frame ${hasFrameChrome ? 'canvas-frame--active' : ''} ${hasFrameChrome && !showResizeChrome ? 'canvas-frame--content-active' : ''} ${focused ? 'canvas-frame--focused-fullscreen' : ''} ${className}`.trim()}
+            className={`canvas-frame ${hasFrameChrome ? 'canvas-frame--active' : ''} ${hasFrameChrome && !showResizeChrome ? 'canvas-frame--content-active' : ''} ${focused ? 'canvas-frame--focused-fullscreen' : ''} ${isLocked ? 'canvas-frame--locked' : ''} ${className}`.trim()}
             style={{ width: '100%', height: '100%', touchAction: 'none' }}
             onPointerDownCapture={handleFramePointerDownCapture}
         >
@@ -116,7 +139,25 @@ export default function CanvasWindowFrame({
                 />
             )}
             <div className="canvas-frame__header">
-                {!focused && <CanvasDragHandle active={isTransformChromeActive} onToggle={toggleTransformChrome} />}
+                {!isLocked ? (
+                    <CanvasDragHandle active={isTransformChromeActive} onToggle={toggleTransformChrome} />
+                ) : dragHandle ? (
+                    <button
+                        ref={setDragNodeRef}
+                        type="button"
+                        className={`canvas-drag-handle canvas-drag-handle--interactive ${isDragging ? 'canvas-drag-handle--active' : ''}`}
+                        title={dragHandle.title || 'Move Split View pane'}
+                        aria-label={dragHandle.title || 'Move Split View pane'}
+                        {...dragAttributes}
+                        {...dragListeners}
+                        onClick={(event) => {
+                            event.preventDefault()
+                            event.stopPropagation()
+                        }}
+                    >
+                        <Scan size={11} strokeWidth={1.8} />
+                    </button>
+                ) : null}
                 <div className="canvas-frame__header-start">
                     {headerStart}
                 </div>

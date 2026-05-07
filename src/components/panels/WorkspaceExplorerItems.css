@@ -23,6 +23,19 @@
     background: var(--bg-hover);
 }
 
+.thread-card--draggable {
+    touch-action: none;
+}
+
+.thread-card--draggable:active {
+    cursor: grabbing;
+}
+
+.thread-card--draggable.is-dragging {
+    opacity: 0.58;
+    background: var(--bg-selected);
+}
+
 .thread-card.active {
     background: var(--bg-selected);
 }

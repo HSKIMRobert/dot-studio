@@ -7,7 +7,7 @@
  */
 
 import type { AssetCard, AssetRef } from '../types'
-import type { StudioState } from '../store'
+import type { FullscreenNodeType, StudioState } from '../store'
 import { assetUrnPath } from './asset-urn'
 
 // ── Types ───────────────────────────────────────────────
@@ -17,10 +17,13 @@ export type DragPreview = {
     label: string;
 };
 
-export type DragAsset = Omit<Partial<AssetCard>, 'kind'> & {
+export type DragAsset = Omit<Partial<AssetCard>, 'kind' | 'source'> & {
     kind?: AssetCard['kind'];
     label?: string;
     source?: string;
+    paneId?: string;
+    nodeId?: string;
+    nodeType?: FullscreenNodeType;
     slug?: string;
     modelId?: string;
     semanticType?: string;
@@ -39,6 +42,7 @@ export type DropTargetData = {
     performerId?: string | null;
     actId?: string | null;
     editorId?: string;
+    splitPaneId?: string | null;
 };
 
 export type PerformerAssetPayload = Parameters<StudioState['addPerformerFromAsset']>[0];
@@ -50,6 +54,37 @@ export function toDragPreview(asset: DragAsset): DragPreview {
         kind: asset?.kind || 'asset',
         label: asset?.label || asset?.name || asset?.modelId || 'Asset',
     };
+}
+
+export function isWorkspaceNodeDrag(asset: DragAsset | undefined | null): asset is DragAsset & {
+    source: 'workspace-node'
+    nodeId: string
+    nodeType: FullscreenNodeType
+} {
+    return asset?.source === 'workspace-node'
+        && typeof asset.nodeId === 'string'
+        && (asset.nodeType === 'performer' || asset.nodeType === 'act')
+}
+
+export function isSplitPaneDrag(asset: DragAsset | undefined | null): asset is DragAsset & {
+    source: 'split-pane'
+    paneId: string
+    nodeId: string
+    nodeType: FullscreenNodeType
+} {
+    return asset?.source === 'split-pane'
+        && typeof asset.paneId === 'string'
+        && typeof asset.nodeId === 'string'
+        && (asset.nodeType === 'performer' || asset.nodeType === 'act')
+}
+
+export function isSplitViewNodeDrag(asset: DragAsset | undefined | null): asset is DragAsset & {
+    source: 'workspace-node' | 'split-pane'
+    paneId?: string
+    nodeId: string
+    nodeType: FullscreenNodeType
+} {
+    return isWorkspaceNodeDrag(asset) || isSplitPaneDrag(asset)
 }
 
 export function assetRefFromDragAsset(asset: DragAsset): AssetRef | null {

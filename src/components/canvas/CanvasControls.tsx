@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useReactFlow } from '@xyflow/react'
 import type { Viewport } from '@xyflow/react'
-import { Maximize, Maximize2, Minimize } from 'lucide-react'
+import { Maximize, Maximize2, Minimize, ZoomIn, ZoomOut } from 'lucide-react'
 import { useShallow } from 'zustand/react/shallow'
 import { useStudioStore } from '../../store'
 import { getCanvasViewportSize } from '../../lib/focus-utils'
@@ -15,6 +15,7 @@ export default function CanvasControls() {
         selectedPerformerId,
         selectedActId,
         focusSnapshot,
+        viewMode,
         enterFocusMode,
         exitFocusMode,
         exitActLayoutMode,
@@ -22,11 +23,13 @@ export default function CanvasControls() {
         selectedPerformerId: state.selectedPerformerId,
         selectedActId: state.selectedActId,
         focusSnapshot: state.focusSnapshot,
+        viewMode: state.viewMode,
         enterFocusMode: state.enterFocusMode,
         exitFocusMode: state.exitFocusMode,
         exitActLayoutMode: state.exitActLayoutMode,
     })))
-    const isFocusActive = !!focusSnapshot
+    const isCanvasMode = viewMode === 'canvas'
+    const isFullscreenActive = viewMode !== 'canvas'
 
     const toggleFitView = useCallback(() => {
         if (isFitted && prevViewport.current) {
@@ -57,33 +60,56 @@ export default function CanvasControls() {
                 return
             }
 
-            if (isFocusActive) {
+            if (isFullscreenActive) {
                 exitFocusMode()
             }
         }
 
         window.addEventListener('keydown', handleKeyDown)
         return () => window.removeEventListener('keydown', handleKeyDown)
-    }, [isFocusActive, exitFocusMode, focusSnapshot, exitActLayoutMode])
-
-    if (isFocusActive) {
-        return null
-    }
+    }, [isFullscreenActive, exitFocusMode, focusSnapshot, exitActLayoutMode])
 
     return (
         <div className="canvas-controls">
-            <button className="canvas-controls__btn" onClick={() => zoomIn({ duration: 200 })} title="Zoom In">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
+            <button
+                type="button"
+                className="canvas-controls__btn"
+                onClick={() => zoomIn({ duration: 200 })}
+                aria-label="Zoom in"
+                title={isCanvasMode ? 'Zoom In' : 'Zoom disabled in fullscreen views'}
+                disabled={!isCanvasMode}
+            >
+                <ZoomIn size={14} />
             </button>
-            <button className="canvas-controls__btn" onClick={() => zoomOut({ duration: 200 })} title="Zoom Out">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><line x1="5" y1="12" x2="19" y2="12" /></svg>
+            <button
+                type="button"
+                className="canvas-controls__btn"
+                onClick={() => zoomOut({ duration: 200 })}
+                aria-label="Zoom out"
+                title={isCanvasMode ? 'Zoom Out' : 'Zoom disabled in fullscreen views'}
+                disabled={!isCanvasMode}
+            >
+                <ZoomOut size={14} />
             </button>
-            {(selectedPerformerId || selectedActId) && (
-                <button className="canvas-controls__btn" onClick={enterFocus} title="Focus Selected">
+            {isCanvasMode && (selectedPerformerId || selectedActId) && (
+                <button
+                    type="button"
+                    className="canvas-controls__btn"
+                    onClick={enterFocus}
+                    aria-label="Focus selected"
+                    title="Focus Selected"
+                >
                     <Maximize2 size={14} />
                 </button>
             )}
-            <button className="canvas-controls__btn" onClick={toggleFitView} title={isFitted ? 'Restore View' : 'Fit to Screen'}>
+            <button
+                type="button"
+                className="canvas-controls__btn"
+                onClick={toggleFitView}
+                aria-label={isFitted ? 'Restore canvas view' : 'Fit canvas to screen'}
+                title={isCanvasMode ? (isFitted ? 'Restore View' : 'Fit to Screen') : 'Fit disabled in fullscreen views'}
+                disabled={!isCanvasMode}
+            >
                 {isFitted ? <Minimize size={14} /> : <Maximize size={14} />}
             </button>
         </div>

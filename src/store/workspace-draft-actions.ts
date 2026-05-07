@@ -12,7 +12,7 @@ import {
 } from '../lib/canvas-node-layout'
 import { createActParticipantKey } from './act-slice-helpers'
 import { defaultMarkdownContent, resolveCanvasSpawnPosition } from './workspace-helpers'
-import { buildExitFocusModeState } from './workspace-focus-actions'
+import { buildCanvasViewResetState, buildExitFocusModeState } from './workspace-focus-actions'
 import type { StudioState } from './types'
 
 type SetState = (partial: Partial<StudioState> | ((state: StudioState) => Partial<StudioState>)) => void
@@ -530,7 +530,7 @@ export function createMarkdownEditorImpl(
         const markdownEditors = (focusExit?.markdownEditors as StudioState['markdownEditors'] | undefined) || state.markdownEditors
 
         return {
-            ...focusExit,
+            ...(focusExit || buildCanvasViewResetState(state.splitView)),
             drafts: {
                 ...state.drafts,
                 [draftId]: {
@@ -569,7 +569,6 @@ export function createMarkdownEditorImpl(
             selectedMarkdownEditorId: editorId,
             selectedPerformerId: null,
             selectedPerformerSessionId: null,
-            focusSnapshot: null,
             inspectorFocus: null,
             workspaceDirty: true,
         }
@@ -588,13 +587,13 @@ export function openDraftEditorImpl(
     // If an editor for this draft already exists, just select it
     const existing = get().markdownEditors.find((e) => e.draftId === draftId)
     if (existing) {
-        const focusExit = buildExitFocusModeState(get())
+        const state = get()
+        const focusExit = buildExitFocusModeState(state)
         set({
-            ...(focusExit || {}),
+            ...(focusExit || buildCanvasViewResetState(state.splitView)),
             selectedMarkdownEditorId: existing.id,
             selectedPerformerId: null,
             selectedPerformerSessionId: null,
-            focusSnapshot: null,
             inspectorFocus: null,
         })
         return existing.id
@@ -615,7 +614,7 @@ export function openDraftEditorImpl(
         const markdownEditors = (focusExit?.markdownEditors as StudioState['markdownEditors'] | undefined) || state.markdownEditors
 
         return {
-            ...focusExit,
+            ...(focusExit || buildCanvasViewResetState(state.splitView)),
             markdownEditors: [
                 ...markdownEditors,
                 {
@@ -642,7 +641,6 @@ export function openDraftEditorImpl(
             selectedMarkdownEditorId: editorId,
             selectedPerformerId: null,
             selectedPerformerSessionId: null,
-            focusSnapshot: null,
             inspectorFocus: null,
             workspaceDirty: true,
         }

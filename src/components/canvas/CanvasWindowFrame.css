@@ -157,3 +157,13 @@
     cursor: default;
     border-radius: 0;
 }
+
+.canvas-frame--locked .canvas-frame__header {
+    cursor: default;
+}
+
+.canvas-frame--split-pane {
+    border-color: var(--border-main);
+    border-radius: var(--radius-lg);
+    box-shadow: none;
+}
