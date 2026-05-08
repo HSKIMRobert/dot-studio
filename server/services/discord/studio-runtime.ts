@@ -65,6 +65,7 @@ export type DiscordActSnapshot = {
 
 const SETTLE_TIMEOUT_MS = 10 * 60_000
 const SETTLE_POLL_MS = 1_000
+const SETTLE_IDLE_GRACE_MS = 4_000
 
 export type DiscordAssistantReply =
     | { kind: 'message'; content: string }
@@ -307,6 +308,7 @@ export async function waitForAssistantReply(
 ) {
     const deadline = Date.now() + SETTLE_TIMEOUT_MS
     let observedBusy = false
+    let settledSince: number | null = null
     while (Date.now() < deadline) {
         const pending = await findPendingStudioInteraction(workingDir, sessionId).catch(() => null)
         if (pending && pending.kind !== 'message') {
@@ -318,6 +320,7 @@ export async function waitForAssistantReply(
         const status = await getStudioChatSessionStatus(workingDir, sessionId).catch(() => ({ status: null }))
         if (status.status?.type === 'busy' || status.status?.type === 'retry') {
             observedBusy = true
+            settledSince = null
         }
         const result = await listStudioSessionMessages(workingDir, sessionId).catch(() => null)
         const latest = result
@@ -327,7 +330,14 @@ export async function waitForAssistantReply(
             return { kind: 'message', content: latest.text } satisfies DiscordAssistantReply
         }
         if (observedBusy && (status.status?.type === 'idle' || status.status?.type === 'error')) {
-            return { kind: 'message', content: 'The Studio session finished without a text reply.' } satisfies DiscordAssistantReply
+            if (settledSince === null) {
+                settledSince = Date.now()
+            }
+            if (Date.now() - settledSince >= SETTLE_IDLE_GRACE_MS) {
+                return { kind: 'message', content: 'The Studio session finished without a text reply.' } satisfies DiscordAssistantReply
+            }
+        } else if (status.status?.type !== 'idle' && status.status?.type !== 'error') {
+            settledSince = null
         }
         await sleep(SETTLE_POLL_MS)
     }

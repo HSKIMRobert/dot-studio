@@ -94,6 +94,9 @@ When a session pauses for user input:
 - pending single-option questions are rendered as Discord select menus, with `Other` opening a text modal when custom input is allowed
 - pending free-text or multi-question prompts are rendered as Discord modals and answered through `respondQuestion` or `rejectQuestion`
 - Discord stores only adapter metadata for pending prompt buttons in `discord-mappings.json`
+- Discord waits through a short idle grace period before declaring a run finished without text, because OpenCode can expose a permission/question prompt just after the session first appears idle
+- if a Discord channel is already blocked on a pending permission or question but no prompt mapping exists for that channel, Discord reposts the prompt controls instead of only telling the user to use buttons
+- pending prompt metadata is timestamped, pruned, and cleaned up if Discord cannot post the controls, so stale local mappings do not permanently suppress a live prompt
 - after an allow or answer response, Discord waits for the same session to settle and ignores the just-resolved pending request id so stale OpenCode polling cannot repost the same prompt
 - Discord keeps the bot typing indicator active while it is waiting for Studio to produce a reply or a permission/question prompt
 - Act thread sync keeps one watcher per Discord Act thread, starts that watcher immediately after `/act message`, also wakes it from Act runtime thread-update events, extends the watcher when the thread is touched again or new participant output is synced, refreshes the Act thread session list on every poll, emits typing while any participant session or Act participant runtime status is still busy or retrying, and waits for a stable-idle window before stopping
@@ -114,6 +117,8 @@ Key rules:
 - keep Discord history backfill text-only and bounded
 - always suppress accidental pings with `allowed_mentions: { parse: [] }`
 - Act thread input must come through `/act message`
+- serialize local Discord mapping writes inside the Studio server process; concurrent Discord messages, prompt replies, Act sync watchers, and workspace syncs must not overwrite each other's adapter metadata
+- track Discord client/shard reconnect and error state in status responses without turning transient gateway reconnects into Studio runtime failures
 
 ## Checklist
 

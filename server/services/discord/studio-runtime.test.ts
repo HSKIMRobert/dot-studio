@@ -1,5 +1,40 @@
-import { describe, expect, it } from 'vitest'
-import { formatDiscordBackfillMessages } from './studio-runtime.js'
+import type { PermissionRequest } from '@opencode-ai/sdk/v2'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { formatDiscordBackfillMessages, waitForAssistantReply } from './studio-runtime.js'
+
+const chatSessionMocks = vi.hoisted(() => ({
+    status: vi.fn(),
+    messages: vi.fn(),
+    permissions: vi.fn(),
+    questions: vi.fn(),
+    sessions: vi.fn(),
+    respondPermission: vi.fn(),
+    respondQuestion: vi.fn(),
+    rejectQuestion: vi.fn(),
+}))
+
+vi.mock('../chat-session-service.js', () => ({
+    getStudioChatSessionStatus: chatSessionMocks.status,
+    listStudioChatSessions: chatSessionMocks.sessions,
+    listPendingPermissions: chatSessionMocks.permissions,
+    listPendingQuestions: chatSessionMocks.questions,
+    listStudioSessionMessages: chatSessionMocks.messages,
+    rejectQuestion: chatSessionMocks.rejectQuestion,
+    respondQuestion: chatSessionMocks.respondQuestion,
+    respondSessionPermission: chatSessionMocks.respondPermission,
+}))
+
+beforeEach(() => {
+    vi.clearAllMocks()
+    chatSessionMocks.permissions.mockResolvedValue([])
+    chatSessionMocks.questions.mockResolvedValue([])
+    chatSessionMocks.messages.mockResolvedValue({ messages: [], nextCursor: null })
+    chatSessionMocks.status.mockResolvedValue({ status: { type: 'idle' } })
+})
+
+afterEach(() => {
+    vi.useRealTimers()
+})
 
 describe('formatDiscordBackfillMessages', () => {
     it('keeps recent text-only user and assistant messages with role labels', () => {
@@ -52,5 +87,32 @@ describe('formatDiscordBackfillMessages', () => {
         expect(messages).toEqual([
             { id: 'session-1:assistant-1', content: '**[Reviewer]**\nI reviewed the draft.' },
         ])
+    })
+})
+
+describe('waitForAssistantReply', () => {
+    it('keeps polling through a short idle gap so delayed permissions become Discord prompts', async () => {
+        vi.useFakeTimers()
+        const permission = {
+            id: 'permission-1',
+            sessionID: 'session-1',
+            permission: 'tool.execute',
+        } as PermissionRequest
+        chatSessionMocks.permissions
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([])
+            .mockResolvedValueOnce([permission])
+        chatSessionMocks.status
+            .mockResolvedValueOnce({ status: { type: 'busy' } })
+            .mockResolvedValueOnce({ status: { type: 'idle' } })
+
+        const reply = waitForAssistantReply('/tmp/workspace', 'session-1')
+        await vi.advanceTimersByTimeAsync(1_000)
+        await vi.advanceTimersByTimeAsync(1_000)
+
+        await expect(reply).resolves.toEqual({
+            kind: 'permission',
+            request: permission,
+        })
     })
 })

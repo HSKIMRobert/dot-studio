@@ -10,6 +10,7 @@ export type DiscordIntegrationStatus = {
         allowedUserIds: string[]
     }
     online: boolean
+    connectionState: 'offline' | 'starting' | 'online' | 'reconnecting'
     botUser?: { id: string; username: string }
     applicationId?: string
     inviteUrl?: string
@@ -23,6 +24,8 @@ export type DiscordIntegrationStatus = {
         allowedUserCount: number
     }
     lastError?: string
+    lastReadyAt?: number
+    lastDisconnectAt?: number
 }
 
 export const discordApi = {

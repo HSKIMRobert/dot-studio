@@ -57,6 +57,7 @@ import {
     describeDiscordSessionBlock,
     ensureActParticipantSession,
     ensureStandaloneSession,
+    findPendingStudioInteraction,
     findWorkspaceAct,
     findWorkspacePerformer,
     getLatestDiscordAssistantMessageId,
@@ -84,6 +85,7 @@ import {
 type DiscordStatus = {
     config: RedactedDiscordIntegrationConfig
     online: boolean
+    connectionState: 'offline' | 'starting' | 'online' | 'reconnecting'
     botUser?: { id: string; username: string }
     applicationId?: string
     inviteUrl?: string
@@ -93,6 +95,8 @@ type DiscordStatus = {
     messageContentLikelyMissing: boolean
     access: ReturnType<typeof summarizeDiscordAccess>
     lastError?: string
+    lastReadyAt?: number
+    lastDisconnectAt?: number
 }
 
 type SyncResult = {
@@ -120,6 +124,8 @@ const MAX_DISCORD_PROMPT_CHARS = 1800
 const ACT_THREAD_SYNC_POLL_MS = 1_500
 const ACT_THREAD_SYNC_TIMEOUT_MS = 30 * 60_000
 const ACT_THREAD_IDLE_CONFIRMATIONS = 80
+const PENDING_INTERACTION_TTL_MS = 24 * 60 * 60_000
+const DISCORD_SEND_RETRY_DELAYS_MS = [250, 1_000] as const
 
 function discordInviteUrl(applicationId: string) {
     const permissions = new PermissionsBitField([
@@ -208,6 +214,9 @@ class DiscordIntegrationService {
     private client: Client | null = null
     private startPromise: Promise<void> | null = null
     private lastError: string | undefined
+    private connectionState: DiscordStatus['connectionState'] = 'offline'
+    private lastReadyAt: number | undefined
+    private lastDisconnectAt: number | undefined
     private messageContentLikelyMissing = false
     private activeDiscordSessionTurns = new Set<string>()
     private activeActThreadSyncs = new Map<string, { promise: Promise<number>; expiresAt: number }>()
@@ -234,6 +243,7 @@ class DiscordIntegrationService {
         return {
             config: redactDiscordConfig(config),
             online: !!this.client?.isReady(),
+            connectionState: this.resolveConnectionState(),
             ...(this.client?.user ? { botUser: { id: this.client.user.id, username: this.client.user.username } } : {}),
             ...(applicationId ? { applicationId, inviteUrl: discordInviteUrl(applicationId) } : {}),
             guilds,
@@ -242,6 +252,8 @@ class DiscordIntegrationService {
             messageContentLikelyMissing: this.messageContentLikelyMissing,
             access: summarizeDiscordAccess(config),
             ...(this.lastError ? { lastError: this.lastError } : {}),
+            ...(this.lastReadyAt ? { lastReadyAt: this.lastReadyAt } : {}),
+            ...(this.lastDisconnectAt ? { lastDisconnectAt: this.lastDisconnectAt } : {}),
         }
     }
 
@@ -262,6 +274,7 @@ class DiscordIntegrationService {
         return {
             config: redactDiscordConfig(config),
             online: false,
+            connectionState: 'offline',
             guilds: [],
             missingPermissions: [],
             messageContentLikelyMissing: false,
@@ -411,6 +424,22 @@ class DiscordIntegrationService {
         await this.start(true)
     }
 
+    private resolveConnectionState(): DiscordStatus['connectionState'] {
+        if (this.client?.isReady()) {
+            return 'online'
+        }
+        if (this.startPromise) {
+            return 'starting'
+        }
+        return this.connectionState
+    }
+
+    private noteDiscordIssue(message: string, error?: unknown) {
+        const detail = error instanceof Error ? `${message}: ${error.message}` : error ? `${message}: ${String(error)}` : message
+        this.lastError = detail
+        console.warn('[discord]', detail)
+    }
+
     private async start(force = false) {
         if (!force && this.client?.isReady()) {
             return
@@ -426,6 +455,7 @@ class DiscordIntegrationService {
         }
         const config = await readDiscordConfig()
         if (!config.enabled || !config.token) {
+            this.connectionState = 'offline'
             return
         }
 
@@ -438,8 +468,40 @@ class DiscordIntegrationService {
                 ],
             })
             this.client = client
+            this.connectionState = 'starting'
             this.lastError = undefined
 
+            client.on(Events.ClientReady, () => {
+                this.connectionState = 'online'
+                this.lastReadyAt = Date.now()
+            })
+            client.on(Events.Error, (error) => {
+                this.noteDiscordIssue('Discord client error', error)
+            })
+            client.on(Events.ShardError, (error, shardId) => {
+                this.noteDiscordIssue(`Discord shard ${shardId} error`, error)
+            })
+            client.on(Events.ShardDisconnect, (event, shardId) => {
+                this.connectionState = 'reconnecting'
+                this.lastDisconnectAt = Date.now()
+                const code = typeof event.code === 'number' ? ` code=${event.code}` : ''
+                const reason = typeof event.reason === 'string' && event.reason ? ` reason=${event.reason}` : ''
+                this.noteDiscordIssue(`Discord shard ${shardId} disconnected${code}${reason}`)
+            })
+            client.on(Events.ShardReconnecting, (shardId) => {
+                this.connectionState = 'reconnecting'
+                this.noteDiscordIssue(`Discord shard ${shardId} reconnecting`)
+            })
+            client.on(Events.ShardReady, (shardId) => {
+                this.connectionState = 'online'
+                this.lastReadyAt = Date.now()
+                console.info(`[discord] Discord shard ${shardId} ready.`)
+            })
+            client.on(Events.ShardResume, (shardId, replayedEvents) => {
+                this.connectionState = 'online'
+                this.lastReadyAt = Date.now()
+                console.info(`[discord] Discord shard ${shardId} resumed after replaying ${replayedEvents} event(s).`)
+            })
             client.on(Events.InteractionCreate, (interaction) => {
                 void this.handleInteraction(interaction).catch((error) => {
                     console.error('[discord] Interaction failed:', error)
@@ -475,12 +537,21 @@ class DiscordIntegrationService {
             if (!client.isReady()) {
                 await ready
             }
+            this.connectionState = 'online'
+            this.lastReadyAt = Date.now()
             await this.registerCommands()
             await this.subscribeMappedActRuntimes()
         })()
 
         try {
             await this.startPromise
+        } catch (error) {
+            this.connectionState = 'offline'
+            if (this.client && !this.client.isReady()) {
+                this.client.destroy()
+                this.client = null
+            }
+            throw error
         } finally {
             this.startPromise = null
         }
@@ -497,6 +568,8 @@ class DiscordIntegrationService {
             this.client = null
         }
         this.startPromise = null
+        this.connectionState = 'offline'
+        this.lastDisconnectAt = Date.now()
         this.lastError = undefined
         this.messageContentLikelyMissing = false
     }
@@ -841,6 +914,12 @@ class DiscordIntegrationService {
         const id = randomUUID().replace(/-/g, '').slice(0, 16)
         await updateDiscordMappings((mappings) => {
             mappings.pendingInteractions ||= {}
+            const expiresBefore = Date.now() - PENDING_INTERACTION_TTL_MS
+            for (const [pendingId, pending] of Object.entries(mappings.pendingInteractions)) {
+                if (typeof pending.createdAt !== 'number' || pending.createdAt < expiresBefore) {
+                    delete mappings.pendingInteractions[pendingId]
+                }
+            }
             mappings.pendingInteractions[id] = {
                 kind: params.kind,
                 workspaceId: params.workspaceId,
@@ -848,6 +927,7 @@ class DiscordIntegrationService {
                 workingDir: params.workingDir,
                 sessionId: params.sessionId,
                 request: params.request as unknown as Record<string, unknown>,
+                createdAt: Date.now(),
             }
         })
         return id
@@ -861,10 +941,36 @@ class DiscordIntegrationService {
         })
     }
 
+    private async withDiscordSendRetry<T>(label: string, operation: () => Promise<T>) {
+        let lastError: unknown
+        for (let attempt = 0; attempt <= DISCORD_SEND_RETRY_DELAYS_MS.length; attempt += 1) {
+            try {
+                return await operation()
+            } catch (error) {
+                lastError = error
+                const delay = DISCORD_SEND_RETRY_DELAYS_MS[attempt]
+                if (typeof delay !== 'number') {
+                    break
+                }
+                await sleep(delay)
+            }
+        }
+        this.noteDiscordIssue(`Discord send failed (${label})`, lastError)
+        throw lastError instanceof Error ? lastError : new Error(String(lastError))
+    }
+
+    private sendChannelMessage(channel: TextChannel, options: Parameters<TextChannel['send']>[0]) {
+        return this.withDiscordSendRetry('channel message', () => channel.send(options))
+    }
+
+    private replyToMessage(message: Message, options: Parameters<Message['reply']>[0]) {
+        return this.withDiscordSendRetry('message reply', () => message.reply(options))
+    }
+
     private async postAssistantReply(message: Message, target: DiscordChannelTarget, sessionId: string, reply: DiscordAssistantReply) {
         if (reply.kind === 'message') {
             for (const chunk of chunkDiscordMessage(reply.content)) {
-                await message.reply({ content: chunk, allowedMentions: { parse: [] } })
+                await this.replyToMessage(message, { content: chunk, allowedMentions: { parse: [] } })
             }
             return
         }
@@ -878,17 +984,22 @@ class DiscordIntegrationService {
                 sessionId,
                 request: reply.request,
             })
-            await message.reply({
-                content: formatPermissionPrompt(reply.request),
-                components: [
-                    new ActionRowBuilder<ButtonBuilder>().addComponents(
-                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:reject`).setLabel('Deny').setStyle(ButtonStyle.Danger),
-                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:once`).setLabel('Allow Once').setStyle(ButtonStyle.Secondary),
-                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:always`).setLabel('Allow Always').setStyle(ButtonStyle.Primary),
-                    ),
-                ],
-                allowedMentions: { parse: [] },
-            })
+            try {
+                await this.replyToMessage(message, {
+                    content: formatPermissionPrompt(reply.request),
+                    components: [
+                        new ActionRowBuilder<ButtonBuilder>().addComponents(
+                            new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:reject`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+                            new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:once`).setLabel('Allow Once').setStyle(ButtonStyle.Secondary),
+                            new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:always`).setLabel('Allow Always').setStyle(ButtonStyle.Primary),
+                        ),
+                    ],
+                    allowedMentions: { parse: [] },
+                })
+            } catch (error) {
+                await this.clearPendingInteraction(pendingId).catch(() => {})
+                throw error
+            }
             return
         }
 
@@ -900,16 +1011,21 @@ class DiscordIntegrationService {
             sessionId,
             request: reply.request,
         })
-        await message.reply({
-            content: formatQuestionPrompt(reply.request),
-            components: [
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                    new ButtonBuilder().setCustomId(`dot:q-answer:${pendingId}`).setLabel('Answer').setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder().setCustomId(`dot:q-reject:${pendingId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
-                ),
-            ],
-            allowedMentions: { parse: [] },
-        })
+        try {
+            await this.replyToMessage(message, {
+                content: formatQuestionPrompt(reply.request),
+                components: [
+                    new ActionRowBuilder<ButtonBuilder>().addComponents(
+                        new ButtonBuilder().setCustomId(`dot:q-answer:${pendingId}`).setLabel('Answer').setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder().setCustomId(`dot:q-reject:${pendingId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+                    ),
+                ],
+                allowedMentions: { parse: [] },
+            })
+        } catch (error) {
+            await this.clearPendingInteraction(pendingId).catch(() => {})
+            throw error
+        }
     }
 
     private async postAssistantReplyToChannel(
@@ -920,7 +1036,7 @@ class DiscordIntegrationService {
     ) {
         if (reply.kind === 'message') {
             for (const chunk of chunkDiscordMessage(reply.content)) {
-                await channel.send({ content: chunk, allowedMentions: { parse: [] } })
+                await this.sendChannelMessage(channel, { content: chunk, allowedMentions: { parse: [] } })
             }
             return
         }
@@ -934,17 +1050,22 @@ class DiscordIntegrationService {
                 sessionId,
                 request: reply.request,
             })
-            await channel.send({
-                content: formatPermissionPrompt(reply.request),
-                components: [
-                    new ActionRowBuilder<ButtonBuilder>().addComponents(
-                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:reject`).setLabel('Deny').setStyle(ButtonStyle.Danger),
-                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:once`).setLabel('Allow Once').setStyle(ButtonStyle.Secondary),
-                        new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:always`).setLabel('Allow Always').setStyle(ButtonStyle.Primary),
-                    ),
-                ],
-                allowedMentions: { parse: [] },
-            })
+            try {
+                await this.sendChannelMessage(channel, {
+                    content: formatPermissionPrompt(reply.request),
+                    components: [
+                        new ActionRowBuilder<ButtonBuilder>().addComponents(
+                            new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:reject`).setLabel('Deny').setStyle(ButtonStyle.Danger),
+                            new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:once`).setLabel('Allow Once').setStyle(ButtonStyle.Secondary),
+                            new ButtonBuilder().setCustomId(`dot:perm:${pendingId}:always`).setLabel('Allow Always').setStyle(ButtonStyle.Primary),
+                        ),
+                    ],
+                    allowedMentions: { parse: [] },
+                })
+            } catch (error) {
+                await this.clearPendingInteraction(pendingId).catch(() => {})
+                throw error
+            }
             return
         }
 
@@ -956,16 +1077,21 @@ class DiscordIntegrationService {
             sessionId,
             request: reply.request,
         })
-        await channel.send({
-            content: formatQuestionPrompt(reply.request),
-            components: [
-                new ActionRowBuilder<ButtonBuilder>().addComponents(
-                    new ButtonBuilder().setCustomId(`dot:q-answer:${pendingId}`).setLabel('Answer').setStyle(ButtonStyle.Primary),
-                    new ButtonBuilder().setCustomId(`dot:q-reject:${pendingId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
-                ),
-            ],
-            allowedMentions: { parse: [] },
-        })
+        try {
+            await this.sendChannelMessage(channel, {
+                content: formatQuestionPrompt(reply.request),
+                components: [
+                    new ActionRowBuilder<ButtonBuilder>().addComponents(
+                        new ButtonBuilder().setCustomId(`dot:q-answer:${pendingId}`).setLabel('Answer').setStyle(ButtonStyle.Primary),
+                        new ButtonBuilder().setCustomId(`dot:q-reject:${pendingId}`).setLabel('Cancel').setStyle(ButtonStyle.Secondary),
+                    ),
+                ],
+                allowedMentions: { parse: [] },
+            })
+        } catch (error) {
+            await this.clearPendingInteraction(pendingId).catch(() => {})
+            throw error
+        }
     }
 
     private async backfillSessionHistory(params: {
@@ -2070,6 +2196,55 @@ class DiscordIntegrationService {
         return () => clearInterval(timer)
     }
 
+    private async hasPendingInteractionPrompt(params: {
+        channelId: string
+        sessionId: string
+        reply: DiscordAssistantReply
+    }) {
+        if (params.reply.kind === 'message') {
+            return false
+        }
+        const requestId = typeof params.reply.request.id === 'string' ? params.reply.request.id : ''
+        if (!requestId) {
+            return false
+        }
+        const mappings = await readDiscordMappings()
+        return Object.values(mappings.pendingInteractions || {}).some((pending) => {
+            const pendingRequestId = typeof pending.request.id === 'string' ? pending.request.id : ''
+            const createdAt = typeof pending.createdAt === 'number' ? pending.createdAt : 0
+            return pending.channelId === params.channelId
+                && pending.sessionId === params.sessionId
+                && pending.kind === params.reply.kind
+                && pendingRequestId === requestId
+                && Date.now() - createdAt <= PENDING_INTERACTION_TTL_MS
+        })
+    }
+
+    private async postPendingInteractionIfMissing(params: {
+        channel: TextChannel
+        workspaceId: string
+        workingDir: string
+        sessionId: string
+    }) {
+        const reply = await findPendingStudioInteraction(params.workingDir, params.sessionId).catch(() => null)
+        if (!reply || reply.kind === 'message') {
+            return false
+        }
+        if (await this.hasPendingInteractionPrompt({
+            channelId: params.channel.id,
+            sessionId: params.sessionId,
+            reply,
+        })) {
+            return false
+        }
+        await this.postAssistantReplyToChannel(params.channel, {
+            workspaceId: params.workspaceId,
+            workingDir: params.workingDir,
+            channelId: params.channel.id,
+        }, params.sessionId, reply)
+        return true
+    }
+
     private beginDiscordSessionTurn(sessionId: string) {
         if (this.activeDiscordSessionTurns.has(sessionId)) {
             return false
@@ -2092,6 +2267,17 @@ class DiscordIntegrationService {
         }
         const block = await describeDiscordSessionBlock(workingDir, sessionId)
         if (block.blocked) {
+            if ((block.reason === 'permission' || block.reason === 'question') && message.channel instanceof TextChannel) {
+                const target = (await readDiscordMappings()).channels[message.channelId]
+                if (target?.workspaceId && await this.postPendingInteractionIfMissing({
+                    channel: message.channel,
+                    workspaceId: target.workspaceId,
+                    workingDir,
+                    sessionId,
+                })) {
+                    return true
+                }
+            }
             await message.reply({
                 content: block.message || 'This Studio thread is not ready for another message yet.',
                 allowedMentions: { parse: [] },
@@ -2390,7 +2576,15 @@ class DiscordIntegrationService {
                     : block.reason === 'question'
                         ? 'waiting for a question response'
                         : 'still running'
-                return `This Act thread cannot accept new Discord messages because ${participantDisplayName(act, runningParticipantKey)} is ${detail}.`
+                const reposted = (block.reason === 'permission' || block.reason === 'question')
+                    ? await this.postPendingInteractionIfMissing({
+                        channel: params.channel,
+                        workspaceId: params.target.workspaceId,
+                        workingDir: params.target.workingDir,
+                        sessionId: runningSessionId,
+                    })
+                    : false
+                return `This Act thread cannot accept new Discord messages because ${participantDisplayName(act, runningParticipantKey)} is ${detail}.${reposted ? ' I reposted the pending Studio prompt in this channel.' : ''}`
             }
         }
 
@@ -2411,7 +2605,16 @@ class DiscordIntegrationService {
         })
         const sessionBlock = await describeDiscordSessionBlock(params.target.workingDir, sessionId)
         if (sessionBlock.blocked) {
-            return sessionBlock.message || 'This Studio thread is not ready for another message yet.'
+            const reposted = (sessionBlock.reason === 'permission' || sessionBlock.reason === 'question')
+                ? await this.postPendingInteractionIfMissing({
+                    channel: params.channel,
+                    workspaceId: params.target.workspaceId,
+                    workingDir: params.target.workingDir,
+                    sessionId,
+                })
+                : false
+            const message = sessionBlock.message || 'This Studio thread is not ready for another message yet.'
+            return reposted ? `${message} I reposted the pending Studio prompt in this channel.` : message
         }
         if (!this.beginDiscordSessionTurn(sessionId)) {
             return 'This Studio thread is already handling a Discord message. Wait for the current reply to finish before sending another one.'

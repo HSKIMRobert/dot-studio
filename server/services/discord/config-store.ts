@@ -61,6 +61,7 @@ export type DiscordPendingInteraction = {
     workingDir: string
     sessionId: string
     request: Record<string, unknown>
+    createdAt?: number
 }
 
 export type DiscordMappings = {
@@ -80,6 +81,7 @@ const CONFIG_PATH = path.join(STUDIO_DIR, 'discord-config.json')
 const MAPPINGS_PATH = path.join(STUDIO_DIR, 'discord-mappings.json')
 const PRIVATE_DIR_MODE = 0o700
 const PRIVATE_FILE_MODE = 0o600
+let mappingsUpdateQueue: Promise<unknown> = Promise.resolve()
 
 function normalizeIdList(value: unknown): string[] {
     if (!Array.isArray(value)) {
@@ -200,7 +202,7 @@ export async function readDiscordMappings(): Promise<DiscordMappings> {
             ...(typeof parsed.menuChannelId === 'string' && parsed.menuChannelId ? { menuChannelId: parsed.menuChannelId } : {}),
             workspaces: normalizeWorkspaceMappings(parsed.workspaces),
             channels: parsed.channels && typeof parsed.channels === 'object' ? parsed.channels : {},
-            pendingInteractions: parsed.pendingInteractions && typeof parsed.pendingInteractions === 'object' ? parsed.pendingInteractions : {},
+            pendingInteractions: normalizePendingInteractions(parsed.pendingInteractions),
         }
     } catch {
         return {
@@ -210,6 +212,39 @@ export async function readDiscordMappings(): Promise<DiscordMappings> {
             pendingInteractions: {},
         }
     }
+}
+
+function normalizePendingInteractions(value: unknown): Record<string, DiscordPendingInteraction> {
+    if (!value || typeof value !== 'object') {
+        return {}
+    }
+    return Object.fromEntries(
+        Object.entries(value as Record<string, Partial<DiscordPendingInteraction>>)
+            .map(([id, raw]) => {
+                if (!raw || typeof raw !== 'object') {
+                    return null
+                }
+                if (raw.kind !== 'permission' && raw.kind !== 'question') {
+                    return null
+                }
+                if (typeof raw.workspaceId !== 'string' || typeof raw.channelId !== 'string' || typeof raw.workingDir !== 'string' || typeof raw.sessionId !== 'string') {
+                    return null
+                }
+                if (!raw.request || typeof raw.request !== 'object') {
+                    return null
+                }
+                return [id, {
+                    kind: raw.kind,
+                    workspaceId: raw.workspaceId,
+                    channelId: raw.channelId,
+                    workingDir: raw.workingDir,
+                    sessionId: raw.sessionId,
+                    request: raw.request,
+                    ...(typeof raw.createdAt === 'number' ? { createdAt: raw.createdAt } : {}),
+                } satisfies DiscordPendingInteraction] as const
+            })
+            .filter((entry): entry is readonly [string, DiscordPendingInteraction] => !!entry),
+    )
 }
 
 function normalizeWorkspaceMappings(value: unknown): Record<string, DiscordWorkspaceMapping> {
@@ -239,10 +274,15 @@ export async function writeDiscordMappings(mappings: DiscordMappings) {
 }
 
 export async function updateDiscordMappings(updater: (current: DiscordMappings) => DiscordMappings | void | Promise<DiscordMappings | void>) {
-    const current = await readDiscordMappings()
-    const updated = (await updater(current)) || current
-    await writeDiscordMappings(updated)
-    return updated
+    const run = async () => {
+        const current = await readDiscordMappings()
+        const updated = (await updater(current)) || current
+        await writeDiscordMappings(updated)
+        return updated
+    }
+    const result = mappingsUpdateQueue.then(run, run)
+    mappingsUpdateQueue = result.catch(() => undefined)
+    return result
 }
 
 export function getOrCreateWorkspaceMapping(
