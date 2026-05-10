@@ -1,3 +1,4 @@
+import type { Event as OpenCodeEvent, GlobalEvent } from '@opencode-ai/sdk/v2'
 import { getOpencode } from '../lib/opencode.js'
 import { sseEncode } from '../lib/sse.js'
 import { resolveSessionOwnership } from './session-ownership-service.js'
@@ -7,13 +8,68 @@ import { subscribeRuntimeExecutionEvents } from './runtime-execution-events.js'
 const HEARTBEAT_INTERVAL_MS = 30_000
 const EXECUTION_DIRECTORY_REFRESH_MS = 1_000
 
-type StreamEvent = {
-    type: string
-    properties?: Record<string, unknown>
+type StreamEvent = OpenCodeEvent
+type GlobalStreamEvent = Omit<Partial<GlobalEvent>, 'payload'> & {
+    payload?: StreamEvent
 }
+type SessionOwnershipContext = NonNullable<Awaited<ReturnType<typeof resolveSessionOwnership>>>
 
 async function listEventDirectories(workingDir: string) {
     return [workingDir]
+}
+
+function readRecord(value: unknown): Record<string, unknown> | null {
+    return value && typeof value === 'object' ? value as Record<string, unknown> : null
+}
+
+function readSessionIdFromRecord(record: Record<string, unknown> | null | undefined): string | null {
+    if (!record) {
+        return null
+    }
+
+    const direct = record.sessionID ?? record.sessionId
+    if (typeof direct === 'string' && direct) {
+        return direct
+    }
+
+    const info = readRecord(record.info)
+    const infoSessionId = info?.sessionID ?? info?.sessionId
+    if (typeof infoSessionId === 'string' && infoSessionId) {
+        return infoSessionId
+    }
+
+    const part = readRecord(record.part)
+    const partSessionId = part?.sessionID ?? part?.sessionId
+    if (typeof partSessionId === 'string' && partSessionId) {
+        return partSessionId
+    }
+
+    return null
+}
+
+function normalizeGlobalStreamEvent(event: GlobalStreamEvent): { directory?: string; event: StreamEvent } | null {
+    if (!event.payload?.type) {
+        return null
+    }
+    return {
+        directory: typeof event.directory === 'string' ? event.directory : undefined,
+        event: event.payload,
+    }
+}
+
+function readSessionIdFromEvent(event: StreamEvent): string | null {
+    return readSessionIdFromRecord(readRecord(event.properties))
+}
+
+function isSessionRuntimeEvent(event: StreamEvent) {
+    return event.type?.startsWith('message.')
+        || event.type?.startsWith('session.')
+        || event.type === 'permission.asked'
+        || event.type === 'permission.replied'
+        || event.type === 'question.asked'
+        || event.type === 'question.replied'
+        || event.type === 'question.rejected'
+        || event.type === 'todo.updated'
 }
 
 export async function buildStudioChatEventStream(workingDir: string, abortSignal?: AbortSignal) {
@@ -23,9 +79,11 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
     return new ReadableStream({
         async start(controller) {
             let active = true
-            const subscribedDirectories = new Set<string>()
-            const connectingDirectories = new Set<string>()
-            const subscriptionControllers = new Map<string, AbortController>()
+            let subscribed = false
+            let connecting = false
+            let subscriptionController: AbortController | null = null
+            const eventDirectories = new Set<string>(await listEventDirectories(workingDir))
+            const ownershipCache = new Map<string, SessionOwnershipContext>()
             let heartbeatTimer: ReturnType<typeof setInterval> | null = null
             let refreshTimer: ReturnType<typeof setInterval> | null = null
             const unsubscribeActRuntime = subscribeActRuntimeEvents(workingDir, (event) => {
@@ -51,12 +109,14 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
                 }
                 unsubscribeActRuntime()
                 unsubscribeRuntimeExecution()
-                for (const subscriptionController of subscriptionControllers.values()) {
+                if (subscriptionController) {
                     subscriptionController.abort()
+                    subscriptionController = null
                 }
-                subscriptionControllers.clear()
-                subscribedDirectories.clear()
-                connectingDirectories.clear()
+                subscribed = false
+                connecting = false
+                eventDirectories.clear()
+                ownershipCache.clear()
                 abortSignal?.removeEventListener('abort', close)
                 try {
                     controller.close()
@@ -76,62 +136,77 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
                 }
             }
 
-            const finishSubscription = (directory: string, subscriptionController: AbortController) => {
-                if (subscriptionControllers.get(directory) === subscriptionController) {
-                    subscriptionControllers.delete(directory)
+            const finishSubscription = (controllerForSubscription: AbortController) => {
+                if (subscriptionController === controllerForSubscription) {
+                    subscriptionController = null
                 }
-                subscriptionController.abort()
-                subscribedDirectories.delete(directory)
-                connectingDirectories.delete(directory)
+                controllerForSubscription.abort()
+                subscribed = false
+                connecting = false
             }
 
-            const subscribeDirectory = async (directory: string) => {
-                if (!active || subscribedDirectories.has(directory) || connectingDirectories.has(directory)) {
+            const resolveOwnershipCached = async (sessionId: string) => {
+                const cached = ownershipCache.get(sessionId)
+                if (cached) {
+                    return cached
+                }
+                const context = await resolveSessionOwnership(sessionId)
+                if (context) {
+                    ownershipCache.set(sessionId, context)
+                }
+                return context
+            }
+
+            const subscribeOpencodeEvents = async () => {
+                if (!active || subscribed || connecting) {
                     return
                 }
 
-                connectingDirectories.add(directory)
-                const subscriptionController = new AbortController()
-                subscriptionControllers.set(directory, subscriptionController)
+                connecting = true
+                const nextSubscriptionController = new AbortController()
+                subscriptionController = nextSubscriptionController
                 try {
-                    const subscription = await oc.event.subscribe(
-                        { directory },
-                        {
-                            signal: subscriptionController.signal,
-                            sseMaxRetryAttempts: 1,
-                        },
-                    )
+                    const subscription = await oc.global.event({
+                        signal: nextSubscriptionController.signal,
+                        sseMaxRetryAttempts: 1,
+                    })
 
                     if (!active) {
-                        finishSubscription(directory, subscriptionController)
+                        finishSubscription(nextSubscriptionController)
                         return
                     }
 
-                    connectingDirectories.delete(directory)
-                    subscribedDirectories.add(directory)
+                    connecting = false
+                    subscribed = true
 
                     void (async () => {
                         try {
-                            for await (const event of subscription.stream as AsyncIterable<StreamEvent>) {
+                            for await (const rawEvent of subscription.stream as AsyncIterable<GlobalStreamEvent>) {
                                 if (!active) {
                                     return
                                 }
+                                const normalized = normalizeGlobalStreamEvent(rawEvent)
+                                if (!normalized) {
+                                    continue
+                                }
+                                if (normalized.directory && !eventDirectories.has(normalized.directory)) {
+                                    continue
+                                }
+                                const { event } = normalized
 
                                 if (event.type === 'permission.asked') {
-                                    const sessionID = typeof event.properties?.sessionID === 'string'
-                                        ? event.properties.sessionID
-                                        : null
-                                    const permissionID = typeof event.properties?.id === 'string'
-                                        ? event.properties.id
+                                    const properties = readRecord(event.properties)
+                                    const sessionID = readSessionIdFromRecord(properties)
+                                    const permissionID = typeof properties?.id === 'string'
+                                        ? properties.id
                                         : null
                                     if (sessionID && permissionID) {
-                                        const context = await resolveSessionOwnership(sessionID)
+                                        const context = await resolveOwnershipCached(sessionID)
                                         if (context?.ownerKind === 'act') {
                                             try {
-                                                await oc.permission.respond({
-                                                    sessionID,
-                                                    permissionID,
-                                                    response: 'always',
+                                                await oc.permission.reply({
+                                                    requestID: permissionID,
+                                                    reply: 'always',
                                                     directory: context.workingDir,
                                                 })
                                             } catch (error) {
@@ -142,15 +217,10 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
                                     }
                                 }
 
-                                if (event.type?.startsWith('message.') || event.type?.startsWith('session.') || event.type === 'permission.asked' || event.type === 'permission.replied' || event.type === 'question.asked' || event.type === 'question.replied' || event.type === 'question.rejected' || event.type === 'todo.updated') {
-                                    const rawProps = event.properties as {
-                                        sessionID?: string
-                                        info?: { sessionID?: string }
-                                        part?: { sessionID?: string }
-                                    } | undefined
-                                    const sessionID = rawProps?.sessionID || rawProps?.info?.sessionID || rawProps?.part?.sessionID
+                                if (isSessionRuntimeEvent(event)) {
+                                    const sessionID = readSessionIdFromEvent(event)
                                     if (sessionID) {
-                                        const context = await resolveSessionOwnership(sessionID)
+                                        const context = await resolveOwnershipCached(sessionID)
                                         if (context) {
                                             enqueueEvent({
                                                 ...event,
@@ -170,22 +240,26 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
                         } catch {
                             // Ignore broken subscription and keep stream alive.
                         } finally {
-                            finishSubscription(directory, subscriptionController)
+                            finishSubscription(nextSubscriptionController)
                             // The refresh timer owns reconnect cadence so failed streams
                             // cannot spin in a tight recursive loop.
                         }
                     })()
                 } catch {
-                    finishSubscription(directory, subscriptionController)
+                    finishSubscription(nextSubscriptionController)
                 }
             }
 
-            const refreshSubscriptions = async () => {
+            const refreshSubscription = async () => {
                 if (!active) {
                     return
                 }
                 const directories = await listEventDirectories(workingDir)
-                await Promise.all(directories.map((directory) => subscribeDirectory(directory)))
+                eventDirectories.clear()
+                for (const directory of directories) {
+                    eventDirectories.add(directory)
+                }
+                await subscribeOpencodeEvents()
             }
 
             if (abortSignal?.aborted) {
@@ -200,10 +274,10 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
             }, HEARTBEAT_INTERVAL_MS)
 
             refreshTimer = setInterval(() => {
-                void refreshSubscriptions()
+                void refreshSubscription()
             }, EXECUTION_DIRECTORY_REFRESH_MS)
 
-            await refreshSubscriptions()
+            await refreshSubscription()
         },
         cancel() {
             closeStream?.()

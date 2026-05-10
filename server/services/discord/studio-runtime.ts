@@ -382,12 +382,12 @@ export async function respondDiscordPermission(params: {
     return respondSessionPermission(params.workingDir, params.sessionId, params.permissionId, params.response)
 }
 
-export async function respondDiscordQuestion(questionId: string, answers: QuestionAnswer[]) {
-    return respondQuestion(questionId, answers)
+export async function respondDiscordQuestion(workingDir: string, questionId: string, answers: QuestionAnswer[]) {
+    return respondQuestion(workingDir, questionId, answers)
 }
 
-export async function rejectDiscordQuestion(questionId: string) {
-    return rejectQuestion(questionId)
+export async function rejectDiscordQuestion(workingDir: string, questionId: string) {
+    return rejectQuestion(workingDir, questionId)
 }
 
 export async function ensureStandaloneSession(params: {

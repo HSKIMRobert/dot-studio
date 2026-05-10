@@ -2228,7 +2228,7 @@ class DiscordIntegrationService {
             return
         }
         const afterMessageId = await getLatestDiscordAssistantMessageId(pending.workingDir, pending.sessionId).catch(() => null)
-        await respondDiscordQuestion(questionId, answers)
+        await respondDiscordQuestion(pending.workingDir, questionId, answers)
         await this.clearPendingInteraction(pendingId)
         await interaction.editReply('Answer submitted.')
         if (interaction.channel?.isTextBased() && interaction.channel instanceof TextChannel) {
@@ -2426,7 +2426,7 @@ class DiscordIntegrationService {
             await interaction.editReply('That question request is missing its id.')
             return
         }
-        await rejectDiscordQuestion(questionId)
+        await rejectDiscordQuestion(pending.workingDir, questionId)
         await this.clearPendingInteraction(pendingId)
         await interaction.editReply('Question cancelled.')
     }
