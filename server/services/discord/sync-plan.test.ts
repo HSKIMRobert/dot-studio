@@ -6,6 +6,7 @@ import {
     archiveCategoryName,
     controlChannelName,
     entityCategoryName,
+    isStudioEntityCategoryName,
     performerChannelName,
     performerCategoryName,
     performerThreadMappingKey,
@@ -26,6 +27,9 @@ describe('discord sync plan helpers', () => {
         expect(entityCategoryName('Review Act')).toBe('Review Act')
         expect(performerCategoryName('Code Reviewer')).toBe('👤 Code Reviewer')
         expect(actCategoryName('Review Act')).toBe('👥 Review Act')
+        expect(isStudioEntityCategoryName('👤 Code Reviewer')).toBe(true)
+        expect(isStudioEntityCategoryName('👥 Review Act')).toBe(true)
+        expect(isStudioEntityCategoryName('studio-workspace')).toBe(false)
     })
 
     it('names unnamed threads by stable creation order without leaking ids', () => {

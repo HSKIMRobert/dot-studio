@@ -46,6 +46,10 @@ export function actCategoryName(name: string) {
     return `👥 ${entityCategoryName(name, 'act')}`.slice(0, DISCORD_NAME_MAX)
 }
 
+export function isStudioEntityCategoryName(name: string) {
+    return name.startsWith('👤 ') || name.startsWith('👥 ')
+}
+
 export function defaultThreadName(index = 1) {
     return `${DEFAULT_THREAD_NAME} (${Math.max(1, index)})`
 }
