@@ -18,12 +18,14 @@ async function listEventDirectories(workingDir: string) {
 
 export async function buildStudioChatEventStream(workingDir: string, abortSignal?: AbortSignal) {
     const oc = await getOpencode()
+    let closeStream: (() => void) | null = null
 
     return new ReadableStream({
         async start(controller) {
             let active = true
             const subscribedDirectories = new Set<string>()
             const connectingDirectories = new Set<string>()
+            const subscriptionControllers = new Map<string, AbortController>()
             let heartbeatTimer: ReturnType<typeof setInterval> | null = null
             let refreshTimer: ReturnType<typeof setInterval> | null = null
             const unsubscribeActRuntime = subscribeActRuntimeEvents(workingDir, (event) => {
@@ -38,6 +40,7 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
                     return
                 }
                 active = false
+                closeStream = null
                 if (heartbeatTimer) {
                     clearInterval(heartbeatTimer)
                     heartbeatTimer = null
@@ -48,6 +51,10 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
                 }
                 unsubscribeActRuntime()
                 unsubscribeRuntimeExecution()
+                for (const subscriptionController of subscriptionControllers.values()) {
+                    subscriptionController.abort()
+                }
+                subscriptionControllers.clear()
                 subscribedDirectories.clear()
                 connectingDirectories.clear()
                 abortSignal?.removeEventListener('abort', close)
@@ -69,18 +76,34 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
                 }
             }
 
+            const finishSubscription = (directory: string, subscriptionController: AbortController) => {
+                if (subscriptionControllers.get(directory) === subscriptionController) {
+                    subscriptionControllers.delete(directory)
+                }
+                subscriptionController.abort()
+                subscribedDirectories.delete(directory)
+                connectingDirectories.delete(directory)
+            }
+
             const subscribeDirectory = async (directory: string) => {
                 if (!active || subscribedDirectories.has(directory) || connectingDirectories.has(directory)) {
                     return
                 }
 
                 connectingDirectories.add(directory)
+                const subscriptionController = new AbortController()
+                subscriptionControllers.set(directory, subscriptionController)
                 try {
-                    const subscription = abortSignal
-                        ? await oc.event.subscribe({ directory }, { signal: abortSignal })
-                        : await oc.event.subscribe({ directory })
+                    const subscription = await oc.event.subscribe(
+                        { directory },
+                        {
+                            signal: subscriptionController.signal,
+                            sseMaxRetryAttempts: 1,
+                        },
+                    )
 
                     if (!active) {
+                        finishSubscription(directory, subscriptionController)
                         return
                     }
 
@@ -147,15 +170,13 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
                         } catch {
                             // Ignore broken subscription and keep stream alive.
                         } finally {
-                            subscribedDirectories.delete(directory)
-                            connectingDirectories.delete(directory)
-                            if (active) {
-                                void subscribeDirectory(directory)
-                            }
+                            finishSubscription(directory, subscriptionController)
+                            // The refresh timer owns reconnect cadence so failed streams
+                            // cannot spin in a tight recursive loop.
                         }
                     })()
                 } catch {
-                    connectingDirectories.delete(directory)
+                    finishSubscription(directory, subscriptionController)
                 }
             }
 
@@ -167,7 +188,12 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
                 await Promise.all(directories.map((directory) => subscribeDirectory(directory)))
             }
 
+            if (abortSignal?.aborted) {
+                close()
+                return
+            }
             abortSignal?.addEventListener('abort', close, { once: true })
+            closeStream = close
 
             heartbeatTimer = setInterval(() => {
                 enqueueEvent({ type: 'server.heartbeat' })
@@ -178,6 +204,9 @@ export async function buildStudioChatEventStream(workingDir: string, abortSignal
             }, EXECUTION_DIRECTORY_REFRESH_MS)
 
             await refreshSubscriptions()
+        },
+        cancel() {
+            closeStream?.()
         },
     })
 }
