@@ -178,7 +178,9 @@ Examples:
 
 ```bash
 dot-studio
+dot-studio --openai-oauth
 dot-studio ~/projects/dance-of-tal
+dot-studio --openai-oauth --act act/@acme/workflows/review-flow
 dot-studio ~/projects/dance-of-tal --performer performer/@acme/workflows/reviewer
 dot-studio open . --no-open
 dot-studio open . --act act/@acme/workflows/review-flow
@@ -191,8 +193,9 @@ Behavior:
 
 - `dot-studio` opens the current directory as a workspace.
 - `dot-studio <path>` opens that directory as a workspace.
-- `--performer <urn>` focuses a performer already on the canvas, or installs and imports it when needed.
-- `--act <urn>` focuses an Act already on the canvas, or installs and imports it when needed.
+- `--openai-oauth` connects OpenAI through browser OAuth before the Studio browser opens. It can be combined with `--performer` or `--act`.
+- `--performer <urn>` prepares the performer before the browser opens, then focuses it in Studio. If needed, Studio installs and imports it first.
+- `--act <urn>` prepares the Act before the browser opens, then focuses it in Studio. If needed, Studio installs and imports it first.
 - startup restore is scoped by working directory.
 - uninitialized target directories are initialized automatically.
 - `dot-studio doctor` checks Node.js, workspace path, Studio port, and OpenCode readiness.
