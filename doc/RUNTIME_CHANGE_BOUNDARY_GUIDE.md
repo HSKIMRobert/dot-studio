@@ -144,14 +144,15 @@ Every execution path should follow this order.
 
 ## Terminal Runtime Boundary
 
-- Studio terminal PTYs are owned by the Studio server, not OpenCode
+- Studio terminal PTYs are owned by the Studio Hono server, not OpenCode
 - OpenCode `instance.dispose` must not close pinned or canvas terminal sessions
-- terminal exit and kill behavior belongs to `server/terminal.ts`
+- terminal exit and kill behavior belongs to `server/services/terminal-service.ts`
+- terminal WebSocket routing belongs to the Hono route in `server/routes/terminal.ts`
 - terminal shell selection follows this order:
   - `DOT_STUDIO_TERMINAL_SHELL`
   - Studio-owned OpenCode global config `shell`
   - platform default (`SHELL`/`zsh` on Unix, `ComSpec`/`cmd.exe` on Windows)
-- Studio terminal WebSocket disconnects should reconnect to the existing OpenCode PTY when the PTY itself is still alive
+- Studio terminal WebSocket disconnects should reconnect to the existing Studio-owned PTY when the PTY itself is still alive
 
 ## Do Not Reintroduce
 
