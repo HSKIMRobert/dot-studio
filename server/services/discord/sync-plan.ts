@@ -85,7 +85,7 @@ export function performerThreadMappingKey(performerId: string, sessionId: string
     return `${performerId}:${sessionId}`
 }
 
-export type DiscordLiveThreadIds = Record<string, Iterable<string>>
+export type DiscordLiveThreadIds = Record<string, Iterable<string> | null | undefined>
 
 export type DiscordThreadCleanupMapping = {
     performerThreadChannels?: Record<string, string>
@@ -101,18 +101,25 @@ export type DiscordThreadCleanupPlan = {
 
 function liveThreadMap(value: DiscordLiveThreadIds) {
     return new Map(
-        Object.entries(value).map(([ownerId, ids]) => [ownerId, new Set(Array.from(ids))] as const),
+        Object.entries(value).map(([ownerId, ids]) => [
+            ownerId,
+            ids ? new Set(Array.from(ids)) : null,
+        ] as const),
     )
 }
 
-function mappedThreadIsLive(key: string, liveIdsByOwner: Map<string, Set<string>>) {
+function mappedThreadIsLive(key: string, liveIdsByOwner: Map<string, Set<string> | null>) {
     const separatorIndex = key.indexOf(':')
     if (separatorIndex <= 0 || separatorIndex === key.length - 1) {
         return false
     }
     const ownerId = key.slice(0, separatorIndex)
     const threadId = key.slice(separatorIndex + 1)
-    return liveIdsByOwner.get(ownerId)?.has(threadId) === true
+    if (!liveIdsByOwner.has(ownerId)) {
+        return false
+    }
+    const liveIds = liveIdsByOwner.get(ownerId) ?? null
+    return liveIds === null || liveIds.has(threadId)
 }
 
 export function pruneStaleDiscordThreadMappings(args: {

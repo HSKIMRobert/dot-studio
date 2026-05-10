@@ -288,7 +288,10 @@ class DiscordIntegrationService {
         await this.ensureReady()
         const workspaces = await listSavedWorkspaces()
         const mappings = await readDiscordMappings()
-        const targetWorkspaceId = mappings.activeWorkspaceId || workspaces[0]?.id
+        const savedWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id))
+        const targetWorkspaceId = mappings.activeWorkspaceId && savedWorkspaceIds.has(mappings.activeWorkspaceId)
+            ? mappings.activeWorkspaceId
+            : workspaces[0]?.id
         if (!targetWorkspaceId) {
             return { ok: true, syncedWorkspaces: 0, failedWorkspaces: [] }
         }
@@ -336,14 +339,33 @@ class DiscordIntegrationService {
                 workspaceMapping.performerThreadChannels ||= {}
                 workspaceMapping.actThreadChannels ||= {}
 
+                const originalPerformerThreadChannels = { ...(workspaceMapping.performerThreadChannels || {}) }
+                const originalActThreadChannels = { ...(workspaceMapping.actThreadChannels || {}) }
+                const originalBackfilledMessageIds = { ...(workspaceMapping.backfilledMessageIds || {}) }
                 const [performerThreadEntries, actThreadEntries] = await Promise.all([
                     Promise.all((snapshot.performers || []).map(async (performer) => {
                         const threads = await listStandaloneThreadsForDiscord(snapshot.workingDir, performer.id)
-                        return [performer.id, threads.map((thread) => thread.id)] as const
+                            .catch((error) => {
+                                console.warn('[discord] Failed to list performer threads during workspace sync cleanup:', {
+                                    workspaceId,
+                                    performerId: performer.id,
+                                    error,
+                                })
+                                return null
+                            })
+                        return [performer.id, threads?.map((thread) => thread.id) || null] as const
                     })),
                     Promise.all((snapshot.acts || []).map(async (act) => {
                         const result = await listActThreadsForDiscord(snapshot.workingDir, act.id)
-                        return [act.id, result.threads.map((thread) => thread.id)] as const
+                            .catch((error) => {
+                                console.warn('[discord] Failed to list Act threads during workspace sync cleanup:', {
+                                    workspaceId,
+                                    actId: act.id,
+                                    error,
+                                })
+                                return null
+                            })
+                        return [act.id, result?.threads.map((thread) => thread.id) || null] as const
                     })),
                 ])
                 const performerThreadIds = Object.fromEntries(performerThreadEntries)
@@ -393,33 +415,49 @@ class DiscordIntegrationService {
                         }
                     }
                 }
-                for (const [performerId, channelId] of Object.entries(workspaceMapping.performerChannels || {})) {
-                    if (staleChannelIds.has(channelId)) {
-                        delete workspaceMapping.performerChannels?.[performerId]
-                    }
-                }
-                for (const [key, channelId] of Object.entries(workspaceMapping.performerThreadChannels || {})) {
-                    if (staleChannelIds.has(channelId)) {
-                        delete workspaceMapping.performerThreadChannels?.[key]
-                    }
-                }
-                for (const [key, channelId] of Object.entries(workspaceMapping.actThreadChannels || {})) {
-                    if (staleChannelIds.has(channelId)) {
-                        delete workspaceMapping.actThreadChannels?.[key]
-                    }
-                }
-                await this.deleteTextChannels(
+                const cleanedChannelIds = await this.deleteTextChannels(
                     guild,
                     Array.from(staleChannelIds),
                     'Dance of Tal Studio stale thread cleanup',
                 )
-                for (const channelId of staleChannelIds) {
+                for (const [key, channelId] of Object.entries(originalPerformerThreadChannels)) {
+                    if (!cleanedChannelIds.has(channelId)) {
+                        workspaceMapping.performerThreadChannels[key] = channelId
+                    }
+                }
+                for (const [key, channelId] of Object.entries(originalActThreadChannels)) {
+                    if (!cleanedChannelIds.has(channelId)) {
+                        workspaceMapping.actThreadChannels[key] = channelId
+                    }
+                }
+                for (const [performerId, channelId] of Object.entries(workspaceMapping.performerChannels || {})) {
+                    if (cleanedChannelIds.has(channelId)) {
+                        delete workspaceMapping.performerChannels?.[performerId]
+                    }
+                }
+                for (const [key, channelId] of Object.entries(workspaceMapping.performerThreadChannels || {})) {
+                    if (cleanedChannelIds.has(channelId)) {
+                        delete workspaceMapping.performerThreadChannels?.[key]
+                    }
+                }
+                for (const [key, channelId] of Object.entries(workspaceMapping.actThreadChannels || {})) {
+                    if (cleanedChannelIds.has(channelId)) {
+                        delete workspaceMapping.actThreadChannels?.[key]
+                    }
+                }
+                for (const channelId of cleanedChannelIds) {
                     delete mappings.channels[channelId]
                     delete workspaceMapping.backfilledMessageIds?.[channelId]
                     for (const [pendingId, pending] of Object.entries(mappings.pendingInteractions || {})) {
                         if (pending.channelId === channelId) {
                             delete mappings.pendingInteractions?.[pendingId]
                         }
+                    }
+                }
+                for (const [channelId, messageIds] of Object.entries(originalBackfilledMessageIds)) {
+                    if (!cleanedChannelIds.has(channelId) && !workspaceMapping.backfilledMessageIds?.[channelId]) {
+                        workspaceMapping.backfilledMessageIds ||= {}
+                        workspaceMapping.backfilledMessageIds[channelId] = messageIds
                     }
                 }
                 await this.deleteCategories(guild, obsoleteWorkspaceCategoryIds)
@@ -911,12 +949,28 @@ class DiscordIntegrationService {
     }
 
     private async deleteTextChannels(guild: Guild, channelIds: string[], reason: string) {
+        const cleanedChannelIds = new Set<string>()
         for (const channelId of Array.from(new Set(channelIds))) {
             const channel = await guild.channels.fetch(channelId).catch(() => null)
+            if (!channel) {
+                cleanedChannelIds.add(channelId)
+                continue
+            }
             if (channel?.type === ChannelType.GuildText) {
-                await channel.delete(reason)
+                try {
+                    await channel.delete(reason)
+                    cleanedChannelIds.add(channelId)
+                } catch (error) {
+                    console.warn('[discord] Failed to delete stale thread channel during workspace sync cleanup:', {
+                        channelId,
+                        error,
+                    })
+                }
+            } else {
+                cleanedChannelIds.add(channelId)
             }
         }
+        return cleanedChannelIds
     }
 
     private async deleteCategories(guild: Guild, categoryIds: string[]) {

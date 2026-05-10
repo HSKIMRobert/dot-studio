@@ -96,4 +96,38 @@ describe('discord sync plan helpers', () => {
             'channel-performer-live': ['message-1'],
         })
     })
+
+    it('keeps mapped threads when an active owner thread list could not be read', () => {
+        const mapping = {
+            performerThreadChannels: {
+                [performerThreadMappingKey('performer-1', 'session-unknown')]: 'channel-performer-unknown',
+                [performerThreadMappingKey('performer-deleted', 'session-old')]: 'channel-performer-deleted',
+            },
+            actThreadChannels: {
+                [actThreadMappingKey('act-1', 'thread-unknown')]: 'channel-act-unknown',
+                [actThreadMappingKey('act-deleted', 'thread-old')]: 'channel-act-deleted',
+            },
+        }
+
+        const cleanup = pruneStaleDiscordThreadMappings({
+            mapping,
+            performerThreadIds: {
+                'performer-1': null,
+            },
+            actThreadIds: {
+                'act-1': undefined,
+            },
+        })
+
+        expect(cleanup.staleChannelIds.sort()).toEqual([
+            'channel-act-deleted',
+            'channel-performer-deleted',
+        ])
+        expect(mapping.performerThreadChannels).toEqual({
+            [performerThreadMappingKey('performer-1', 'session-unknown')]: 'channel-performer-unknown',
+        })
+        expect(mapping.actThreadChannels).toEqual({
+            [actThreadMappingKey('act-1', 'thread-unknown')]: 'channel-act-unknown',
+        })
+    })
 })
