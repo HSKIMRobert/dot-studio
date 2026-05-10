@@ -556,7 +556,11 @@ class DiscordIntegrationService {
                     await this.moveChannelsToCategory(guild, threadChannelIds, category.id)
                 }
                 await this.deleteCategories(guild, obsoleteGenericCategoryIds)
-                void this.runDiscordSyncBestEffort(`position archive category ${archiveCategory.id}`, () => archiveCategory.setPosition(categoryPosition))
+                await this.runDiscordSyncBestEffort(
+                    `position archive category ${archiveCategory.id} at bottom`,
+                    () => this.moveCategoryToBottom(guild, archiveCategory.id),
+                    3_000,
+                )
                 await this.deleteInactiveWorkspaceRootCategories(
                     guild,
                     mappings,
@@ -1033,6 +1037,20 @@ class DiscordIntegrationService {
                 await this.runDiscordSyncBestEffort(`move Discord text channel ${channel.id}`, () => channel.setParent(parentId))
             }
         }
+    }
+
+    private async moveCategoryToBottom(guild: Guild, categoryId: string) {
+        const channels = await this.withDiscordSyncTimeout(
+            `fetch Discord channels before positioning category ${categoryId}`,
+            () => guild.channels.fetch(),
+        )
+        const categories = Array.from(channels.values())
+            .filter((channel) => channel?.type === ChannelType.GuildCategory)
+        const category = categories.find((channel) => channel.id === categoryId)
+        if (!category || categories.length <= 1) {
+            return
+        }
+        await category.setPosition(categories.length - 1)
     }
 
     private async deleteTextChannels(guild: Guild, channelIds: string[], reason: string) {
